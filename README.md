@@ -1,6 +1,6 @@
-# SES 0.1.0a2 — experimental terminal spreadsheet
+# SES 0.1.0a3 — experimental terminal spreadsheet
 
-A first, **independent** implementation of SES, inspired by the keyboard-first text interface of Quattro Pro / Lotus 1-2-3. It does **not** alter sumcore or any existing sum packages. Python >= 3.10, stdlib-only runtime, curses (Linux).
+A first, **independent** implementation of SES, inspired by the keyboard-first text interface of Quattro Pro / Lotus 1-2-3. It does **not** alter sumcore or any existing sum packages. Python >= 3.10, curses (Linux) and sumTUI >= 0.8.0a30, which also supplies the shared dialogs and theme definitions.
 
 ## Run
 
@@ -75,6 +75,18 @@ sheet names, external files, named ranges, or every possible formula grammar.
 Cut/paste moves the source formula without retargeting all dependent formulas.
 Use backups for actual business records. Shift/Ctrl mouse selection depends on
 terminal modifier reporting; it may not be reliable in all terminals.
+
+## SES 0.1.0a3 — CLI, file dialogs and preferences (regression fix)
+
+- `ses --theme DOS --demo` restores the demo and theme options.
+- `ses /path/to/mybook.ses` opens a native workbook before the TUI starts.
+- `ses --grid`, `ses --no-grid`, `ses --list-themes` and `ses --help`.
+- `File -> Open` delegates to the existing **sumTUI FileDialog**; `File -> Save as` uses the existing **sumTUI read_entry**, with a prefilled filename and overwrite confirmation. `File -> Save` reuses the loaded filename, or enters Save as if none.
+- `Style -> Theme` chooses an existing sumTUI theme. SES does not alter the transversal theme manager. Terminal rendering maps sumTUI RGB roles to available curses colors; true-color fidelity is not guaranteed.
+- User preferences are stored in `${XDG_CONFIG_HOME:-~/.config}/sum/ses.json`: theme, grid enabled and last used directory. Explicit command-line options override saved preferences, and changes made in SES persist. Document data remains inside the workbook.
+- `--demo` and positional filename are mutually exclusive. A nonexistent/invalid filename produces an error rather than silently starting an empty sheet.
+
+**Integration caveat:** SES still uses curses for its sheet and sumTUI's Rich-backed event loop for file dialogs. It suspends curses during a dialog. This transition should be tested in the user's actual terminal; long term the sheet should migrate to a shared sumTUI application/event loop.
 
 <p align=center><b>- oOo -</b></p>
 

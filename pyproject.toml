@@ -3,10 +3,11 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 [project]
 name = "sum-ses"
-version = "0.1.0a2"
+version = "0.1.0a3"
 description = "SES: terminal spreadsheet prototype for the sum ecosystem"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
+dependencies = ["sumtui>=0.8.0a30"]
 [project.scripts]
 ses = "ses.tui:main"
 [tool.setuptools.packages.find]

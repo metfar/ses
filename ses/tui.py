@@ -1,17 +1,21 @@
 """Keyboard-first curses interface for SES. No dependency on graphical desktop."""
+import argparse
 import curses
+import json
+import os
 import sys
+from pathlib import Path
 from .engine import Book, SheetError, cellref, colname
 
 MENUS={
- 'File':['New','Open','Save','Add sheet','Quit'],
+ 'File':['New','Open','Save','Save as','Add sheet','Quit'],
  'Edit':['Undo','Redo','Copy','Cut','Paste','Fill down','Fill right','Insert row','Insert column','Select range'],
- 'Style':['Bold','Underline','Foreground','Background','Align left','Align center','Align right','Grid lines'],
+ 'Style':['Bold','Underline','Foreground','Background','Align left','Align center','Align right','Grid lines','Theme'],
  'Data':['Recalculate','Go to cell'],
  'Tools':['Command line','Show formula'],
  'Help':['Keys','Functions','About']}
 HELP=[
- 'SES 0.1.0a2 - terminal spreadsheet',
+ 'SES 0.1.0a3 - terminal spreadsheet',
  'F2 or click formula bar: edit; typing replaces; Tab in edit: pick range',
  'Ctrl+C copy  Ctrl+X cut  Ctrl+V paste  Ctrl+B bold  Ctrl+U underline',
  'Ctrl+Z undo  Ctrl+Y redo  F1 help  F5 goto  F6 next sheet',
@@ -23,14 +27,75 @@ HELP=[
  ':copy A1:B3 D5   :cut A1:B3 D5   :fill down A1:A9',
  ':row 4  :col C  :grid  :fg 3  :bg 1  :underline',
  'Formula: =SUM(A1:B4), @AVG(A1:A10), =COUNTIF(A1:A10;">5")',
- 'NOTE: insert does not yet repair formulas in OTHER sheets; back up files.']
+ 'Open/Save dialogs: sumTUI; --theme DOS; --demo; ses file.ses']
+
+# Only SES preferences live here. Theme definitions stay in sumTUI/sumtheme.
+def preference_path():
+    base=Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home()/'.config')));
+    return base/'sumtui'/'ses.json';
+
+
+def load_preferences(path=None):
+    target=Path(path) if path else preference_path();
+    try:
+        data=json.loads(target.read_text(encoding='utf-8'));
+        if not isinstance(data,dict): return {};
+        return {k:data[k] for k in ('theme','grid','last_dir') if k in data};
+    except (FileNotFoundError,ValueError,OSError):
+        return {};
+
+
+def save_preferences(data,path=None):
+    target=Path(path) if path else preference_path();
+    target.parent.mkdir(parents=True,exist_ok=True);
+    import tempfile;
+    import os as _os;
+    fd,tmp=tempfile.mkstemp(prefix='.ses-',dir=str(target.parent));
+    try:
+        with _os.fdopen(fd,'w',encoding='utf-8') as out:
+            json.dump(data,out,ensure_ascii=False,indent=2);
+            out.write('\n');
+        _os.replace(tmp,target);
+    finally:
+        if _os.path.exists(tmp): _os.unlink(tmp);
+
+
+def sample_book():
+    book=Book();
+    for addr,value in {'A1':"'Item",'B1':"'Price",'A2':"'Tea",'B2':'120',
+                       'A3':"'Coffee",'B3':'175','A4':"'Total",'B4':'=SUM(B2:B3)'}.items():
+        book.put(addr,value);
+    return book;
+
+
+def theme_palette(name):
+    from sumtui.theme import make_theme, available_theme_names;
+    names=available_theme_names(include_hidden=True);
+    aliases={'spectrum':'ZX','pc':'DOS','turbo':'DOS','commodore':'C64','sumx':'XBASE'};
+    resolved=aliases.get(name.lower(),name);
+    if resolved.casefold() not in [n.casefold() for n in names] and resolved.upper() not in ('DOS','ZX','XBASE','C64','LIGHT','DARK'):
+        raise ValueError('Unknown theme: '+name+' (try --list-themes)');
+    return make_theme(resolved);
+
+
+def xterm_index(rgb,colors):
+    if colors<256:
+        # ANSI basic colors ordered by ncurses indices.
+        palette=[(0,0,0),(190,0,0),(0,170,0),(170,85,0),
+                 (0,0,170),(170,0,170),(0,170,170),(210,210,210)];
+        return min(range(min(colors,8)),key=lambda n:sum((a-b)**2 for a,b in zip(rgb,palette[n])));
+    levels=[0,95,135,175,215,255];
+    choices=[(16+36*r+6*g+b,(levels[r],levels[g],levels[b])) for r in range(6) for g in range(6) for b in range(6)];
+    choices.extend((232+i,(8+10*i,)*3) for i in range(24));
+    return min(choices,key=lambda item:sum((a-b)**2 for a,b in zip(rgb,item[1])))[0];
 
 class App:
-    def __init__(self,win):
-        self.win=win; self.book=Book(); self.cx=1; self.cy=1
+    def __init__(self,win,book=None,filename=None,theme='DOS',grid=False,preferences=None):
+        self.win=win; self.book=book if book is not None else Book(); self.cx=1; self.cy=1
         self.scrollx=1; self.scrolly=1; self.anchor=None; self.extra=[]
-        self.mode='cell'; self.grid=False; self.clipboard=None
-        self.message='READY'; self.file='book.ses'; self.running=True
+        self.mode='cell'; self.grid=bool(grid); self.clipboard=None
+        self.message='READY'; self.file=str(filename) if filename else None; self.running=True
+        self.theme_name=theme; self.preferences=preferences or {}; self.theme=None; self.theme_pairs={}
         self.menu_names=list(MENUS); self.mouse_anchor=None
         self.colors=False
         try:
@@ -40,10 +105,68 @@ class App:
                     curses.init_pair(1+bg*8+fg,fg,bg)
             self.colors=True
         except (curses.error,ValueError): pass
+        self.apply_theme(theme)
         try: curses.curs_set(0)
         except curses.error: pass
         curses.mousemask(curses.ALL_MOUSE_EVENTS|curses.REPORT_MOUSE_POSITION)
         win.keypad(True); win.timeout(-1)
+
+    def apply_theme(self,name):
+        self.theme=theme_palette(str(name)); self.theme_name=self.theme.name;
+        self.theme_pairs={};
+        if not self.colors: return;
+        roles={'menu':('text','panel'),'formula':('command_text','command_bg'),
+               'headers':('text','panel'),'body':('viewer_text','viewer_bg'),
+               'status':('text','panel'),'selection':('selection_text','selection_bg')};
+        for number,(role,(fore,back)) in enumerate(roles.items(),65):
+            if number>=curses.COLOR_PAIRS: break;
+            f=xterm_index(getattr(self.theme,fore),curses.COLORS);
+            b=xterm_index(getattr(self.theme,back),curses.COLORS);
+            try:
+                curses.init_pair(number,f,b);
+                self.theme_pairs[role]=curses.color_pair(number);
+            except curses.error: pass;
+
+    def shade(self,role):
+        return self.theme_pairs.get(role,0);
+
+    def pref_snapshot(self):
+        return {'theme':self.theme_name,'grid':self.grid,
+                'last_dir':str(Path(self.file).expanduser().resolve().parent) if self.file else self.preferences.get('last_dir',str(Path.cwd()))};
+
+    def persist(self):
+        try: save_preferences(self.pref_snapshot());
+        except OSError as exc: self.message=f'Preferences not saved: {exc}';
+
+    def shared_dialog(self,kind,path='.',title='Open SES'):
+        # sumTUI has its own event loop; suspend curses to prevent two screen owners.
+        from sumtui.dialogs import choose_file,read_entry;
+        curses.def_prog_mode(); curses.endwin();
+        try:
+            if kind=='open': return choose_file(path=path,title=title,theme=self.theme_name);
+            return read_entry(text='File name or full path',default=path,title=title,theme=self.theme_name);
+        finally:
+            curses.reset_prog_mode();
+            self.win.clear(); self.win.refresh();
+
+    def open_dialog(self):
+        path=self.preferences.get('last_dir',str(Path.cwd()));
+        result=self.shared_dialog('open',path,title='SES - Open');
+        if result.accepted and str(result.value).strip():
+            self.command('open '+str(result.value));
+
+    def save_as_dialog(self):
+        suggestion=self.file or str(Path(self.preferences.get('last_dir',str(Path.cwd())))/'book.ses');
+        result=self.shared_dialog('entry',suggestion,title='SES - Save as (full path)');
+        if result.accepted and str(result.value).strip():
+            target=Path(str(result.value)).expanduser();
+            if target.exists():
+                from sumtui.dialogs import ask_question;
+                curses.def_prog_mode(); curses.endwin();
+                try: answer=ask_question(f'Overwrite {target.name}?',theme=self.theme_name);
+                finally: curses.reset_prog_mode(); self.win.clear(); self.win.refresh();
+                if not answer.accepted: return;
+            self.command('save '+str(target));
 
     def addr(self): return f'{colname(self.cx)}{self.cy}'
     def limits(self):
@@ -85,13 +208,13 @@ class App:
         except curses.error: pass
     def draw(self):
         self.adjust(); self.win.erase(); h,w,cols,rows=self.limits()
-        self.put(0,0,'  '.join(self.menu_names),curses.A_REVERSE)
-        self.put(1,0,f'{self.book.active}  {self.addr()}: {self.book.get(self.addr()).raw}',curses.A_BOLD)
-        self.put(2,0,'    '+''.join(f'{colname(x):^12}' for x in range(self.scrollx,self.scrollx+cols)),curses.A_REVERSE)
+        self.put(0,0,'  '.join(self.menu_names),self.shade('menu')|curses.A_BOLD)
+        self.put(1,0,f'{self.book.active}  {self.addr()}: {self.book.get(self.addr()).raw}',self.shade('formula')|curses.A_BOLD)
+        self.put(2,0,'    '+''.join(f'{colname(x):^12}' for x in range(self.scrollx,self.scrollx+cols)),self.shade('headers')|curses.A_BOLD)
         for idx in range(rows):
             yy=3+idx*(2 if self.grid else 1); row=self.scrolly+idx
             row_selected=self.mode=='row' and self.contains(self.cx,row)
-            self.put(yy,0,f'{row:>4}',curses.A_REVERSE|(curses.A_BOLD if row_selected else 0))
+            self.put(yy,0,f'{row:>4}',self.shade('headers')|(curses.A_BOLD if row_selected else 0))
             for j in range(cols):
                 col=self.scrollx+j; key=f'{colname(col)}{row}'
                 cell=self.book.get(key); val=self.book.evaluate(key)
@@ -101,8 +224,8 @@ class App:
                 if cell.align=='center': s=s.center(12)
                 elif cell.align=='right' or (cell.align=='general' and isinstance(val,(int,float))): s=s.rjust(12)
                 else: s=s.ljust(12)
-                attr=(curses.A_BOLD if cell.bold else 0)|(curses.A_UNDERLINE if cell.underline else 0)
-                if self.colors: attr|=curses.color_pair(1+int(cell.bg)%8*8+int(cell.fg)%8)
+                attr=self.shade('body')|(curses.A_BOLD if cell.bold else 0)|(curses.A_UNDERLINE if cell.underline else 0)
+                if self.colors and (cell.fg!=7 or cell.bg!=0): attr=curses.color_pair(1+int(cell.bg)%8*8+int(cell.fg)%8)|(attr & (curses.A_BOLD|curses.A_UNDERLINE))
                 if self.contains(col,row): attr|=curses.A_REVERSE
                 if col==self.cx and row==self.cy: attr|=curses.A_BOLD|curses.A_UNDERLINE
                 self.put(yy,4+12*j,s,attr)
@@ -116,7 +239,7 @@ class App:
             self.put(2,4,''.join(f'{colname(x):^11}│' for x in range(self.scrollx,self.scrollx+cols))[:w-5],curses.A_REVERSE)
         self.put(h-2,0,'─'*(w-1),curses.A_DIM)
         amount=sum((c-a+1)*(d-b+1) for a,b,c,d in self.rects())
-        self.put(h-1,0,f'{self.book.active} | {self.addr()} | {amount} selected | {self.message}',curses.A_REVERSE)
+        self.put(h-1,0,f'{self.book.active} | {self.addr()} | {amount} selected | {self.message}',self.shade('status'))
         self.win.refresh()
     def prompt(self,title,default=''):
         h,w=self.win.getmaxyx(); self.put(h-1,0,' '*(w-1),curses.A_REVERSE)
@@ -274,9 +397,13 @@ class App:
         parts=line.strip().split(); cmd=parts[0].lower() if parts else ''
         try:
             if cmd=='save':
-                self.file=parts[1] if len(parts)>1 else self.file; self.book.save(self.file); self.message=f'Saved {self.file}'
+                target=line.strip()[len(parts[0]):].strip() or self.file
+                if not target: self.save_as_dialog(); return
+                self.book.save(Path(target).expanduser()); self.file=str(Path(target).expanduser()); self.message=f'Saved {self.file}'; self.persist()
             elif cmd=='open':
-                self.file=parts[1]; self.book=Book.load(self.file); self.message=f'Opened {self.file}'
+                target=line.strip()[len(parts[0]):].strip()
+                if not target: self.open_dialog(); return
+                candidate=Book.load(Path(target).expanduser()); self.book=candidate; self.file=str(Path(target).expanduser()); self.message=f'Opened {self.file}'; self.persist()
             elif cmd=='sheet': self.book.add_sheet(' '.join(parts[1:])); self.message='Sheet added'
             elif cmd=='goto': self.cx,self.cy,*_=cellref(parts[1]); self.mode='cell'; self.anchor=None; self.extra=[]
             elif cmd=='select':
@@ -293,7 +420,8 @@ class App:
                 if color not in range(8): raise ValueError('Color number must be 0..7')
                 self.book.style(self.selected(),cmd,color); self.message=f'{cmd.upper()} set to {color}'
             elif cmd=='align': self.book.style(self.selected(),'align',parts[1].lower()); self.message='Alignment changed'
-            elif cmd=='grid': self.grid=not self.grid; self.message='Grid '+('on' if self.grid else 'off')
+            elif cmd=='grid': self.grid=not self.grid; self.message='Grid '+('on' if self.grid else 'off'); self.persist()
+            elif cmd=='theme': self.apply_theme(parts[1]); self.message='Theme '+self.theme_name; self.persist()
             elif cmd=='row': self.book.insert('row',int(parts[1])); self.message='Row inserted'
             elif cmd=='col':
                 spec=parts[1].upper(); x=cellref(spec+'1')[0] if spec.isalpha() else int(spec)
@@ -302,7 +430,7 @@ class App:
             elif cmd=='undo': self.book.undo()
             elif cmd=='redo': self.book.redo()
             elif cmd=='help': self.modal(HELP)
-            elif cmd=='quit': self.running=False
+            elif cmd=='quit': self.persist(); self.running=False
             elif cmd: self.message=f'Unknown command: {cmd}'
         except (SheetError,ValueError,IndexError,KeyError,OSError) as e:
             self.message=f'ERROR {e}'
@@ -324,11 +452,12 @@ class App:
             elif k==curses.KEY_DOWN: sub=(sub+1)%len(options)
             elif k in (10,13,curses.KEY_ENTER):
                 action=options[sub]
-                if action=='New': self.book=Book()
-                elif action=='Open': self.command('open '+self.prompt('File: '))
-                elif action=='Save': self.command('save '+self.prompt('File: ',self.file))
+                if action=='New': self.book=Book(); self.file=None; self.message='New workbook'
+                elif action=='Open': self.open_dialog()
+                elif action=='Save': self.command('save')
+                elif action=='Save as': self.save_as_dialog()
                 elif action=='Add sheet': self.command('sheet '+self.prompt('Name: '))
-                elif action=='Quit': self.running=False
+                elif action=='Quit': self.persist(); self.running=False
                 elif action=='Undo': self.command('undo')
                 elif action=='Redo': self.command('redo')
                 elif action=='Copy': self.command('copy')
@@ -345,6 +474,13 @@ class App:
                 elif action=='Background': self.command('bg '+self.prompt('BG 0..7: '))
                 elif action.startswith('Align '): self.command('align '+action[6:].lower())
                 elif action=='Grid lines': self.command('grid')
+                elif action=='Theme':
+                    from sumtui.theme import available_theme_names
+                    from sumtui.dialogs import choose_list
+                    curses.def_prog_mode(); curses.endwin()
+                    try: result=choose_list(available_theme_names(),title='SES theme',theme=self.theme_name)
+                    finally: curses.reset_prog_mode(); self.win.clear(); self.win.refresh()
+                    if result.accepted: self.command('theme '+str(result.value))
                 elif action=='Recalculate': self.book.dirty=True; self.message='Recalculated'
                 elif action=='Go to cell': self.command('goto '+self.prompt('Cell: '))
                 elif action=='Command line': self.command(self.prompt(':'))
@@ -354,7 +490,7 @@ class App:
                         'IF AND OR NOT ABS ROUND ROUNDUP ROUNDDOWN CEIL FLOOR',
                         'VALUE CONCAT STRING LEFT RIGHT MID FIND LENGTH',
                         'INDEX CHOOSE VLOOKUP HLOOKUP SQRT MOD UPPER LOWER'])
-                elif action=='About': self.modal(['SES 0.1.0a2 - alpha','GNU GPL-3.0-or-later'])
+                elif action=='About': self.modal(['SES 0.1.0a3 - alpha','GNU GPL-3.0-or-later'])
                 return
     def run(self):
         while self.running:
@@ -379,10 +515,41 @@ class App:
             elif k in (10,13): self.edit()
             elif 32<=k<=126: self.edit(replace=True,initial=chr(k))
 
-def main():
+def argument_parser():
+    parser=argparse.ArgumentParser(prog='ses',description='SES - sumEditSpreadsheet');
+    parser.add_argument('file',nargs='?',help='existing .ses workbook to open');
+    parser.add_argument('--theme',help='sumTUI theme, e.g. DOS, ZX, XBASE, Light');
+    parser.add_argument('--list-themes',action='store_true',help='list available sumTUI themes');
+    parser.add_argument('--demo',action='store_true',help='open example sheet');
+    flags=parser.add_mutually_exclusive_group();
+    flags.add_argument('--grid',action='store_true',help='show DOS gridlines');
+    flags.add_argument('--no-grid',action='store_true',help='hide DOS gridlines');
+    parser.add_argument('--version',action='version',version='SES 0.1.0a3');
+    return parser;
+
+
+def main(argv=None):
+    parser=argument_parser(); args=parser.parse_args(argv);
+    if args.list_themes:
+        from sumtui.theme import available_theme_names;
+        print('\n'.join(available_theme_names())); return 0;
+    if args.demo and args.file: parser.error('choose either FILE or --demo');
+    pref=load_preferences(); theme=args.theme or pref.get('theme','DOS');
+    try: theme_palette(theme);
+    except (ValueError,ImportError) as error: parser.error(str(error));
+    grid=True if args.grid else (False if args.no_grid else bool(pref.get('grid',False)));
+    if args.file:
+        try: book=Book.load(Path(args.file).expanduser());
+        except (OSError,ValueError,KeyError,TypeError,SheetError) as exc:
+            parser.exit(2,f'ses: cannot open {args.file}: {exc}\n');
+    else: book=sample_book() if args.demo else Book();
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        print('SES requires interactive terminal; run: ses')
-        return
-    curses.wrapper(lambda stdscr:App(stdscr).run())
+        parser.exit(2,'ses: interactive terminal required\n');
+    def run(win):
+        app=App(win,book=book,filename=args.file,theme=theme,grid=grid,preferences=pref);
+        try: app.run();
+        finally: app.persist();
+    curses.wrapper(run);
+    return 0
 
 if __name__=='__main__': main()
