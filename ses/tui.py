@@ -1,607 +1,395 @@
-"""Keyboard-first curses interface for SES. No dependency on graphical desktop."""
-import argparse
-import curses
-import json
-import os
-import sys
-from pathlib import Path
-from rich.style import Style
-from .engine import Book, SheetError, cellref, colname
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#pylint:disable=W0301
+#  
+#  Copyright 2018- William Martinez Bas <metfar@gmail.com>
+#  
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 2 of the License, or
+#  (at your option) any later version.
+#  
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#  
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, write to the Free Software
+#  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
+#  MA 02110-1301, USA.
+#  
+#
+#import warnings;
+#warnings.filterwarnings("ignore", category=UserWarning);
+import argparse;
+import copy;
+import json;
+import os;
+import sys;
+from pathlib import Path;
 
-MENUS={
- 'File':['New','Open','Save','Save as','Add sheet','Quit'],
- 'Edit':['Undo','Redo','Copy','Cut','Paste','Fill down','Fill right','Insert row','Insert column','Select range'],
- 'Style':['Bold','Underline','Foreground','Background','Align left','Align center','Align right','Grid lines','Theme'],
- 'Data':['Recalculate','Go to cell'],
- 'Tools':['Command line','Show formula'],
- 'Help':['Keys','Functions','About']}
-HELP=[
- 'SES 0.1.0a5 - terminal spreadsheet',
- 'F2 or click formula bar: edit; typing replaces; Tab in edit: pick range',
- 'Ctrl+C copy  Ctrl+X cut  Ctrl+V paste  Ctrl+B bold  Ctrl+U underline',
- 'Ctrl+Z undo  Ctrl+Y redo  F1 help  F5 goto  F6 next sheet',
- 'Shift+arrows selects cells (if terminal supports shifted keys)',
- 'Click column/row heading: select full column/row',
- 'Shift+click header: extend selection; Ctrl+click: add disjoint range',
- 'Mouse modifier reporting depends on your terminal emulator',
- 'Menu Style: foreground/background, underlining, DOS grid borders',
- ':copy A1:B3 D5   :cut A1:B3 D5   :fill down A1:A9',
- ':row 4  :col C  :grid  :fg 3  :bg 1  :underline',
- 'Formula: =SUM(A1:B4), @AVG(A1:A10), =COUNTIF(A1:A10;">5")',
- 'Open/Save dialogs: sumTUI; --theme DOS; --demo; ses file.ses',
- 'Demo: conditions, VLOOKUP, SUMIF, COUNTIF and cell colors']
+from rich.console import Group;
+from rich.text import Text;
+from sumtui import (
+    Application, HBox, Key, KeyEvent, Label, Menu, MenuBar, MenuDesktop,
+    MenuItem, MouseEvent, Separator, StatusBar, TextInput, VBox, Widget,
+    ask_question, available_theme_names, choose_file, choose_list,
+    read_entry, refresh_user_themes, show_message,
+);
 
-# Only SES preferences live here. Theme definitions stay in sumTUI/sumtheme.
+from .borders import border_names, glyphs;
+from .engine import Book, Cell, SheetError, cellref, colname, transform_formula;
+from .preview import make_pdf, open_file;
+from .version import __version__;
+
+
+HELP = [
+    f"SES {__version__} - sumEditSpreadsheet",
+    "F2/click formula: edit cell; typing replaces cell",
+    "Ctrl+C/X/V copy/cut/paste   Ctrl+Z/Y undo/redo",
+    "Ctrl+B bold   Ctrl+U underline   F5 goto   F6 next sheet",
+    "Shift+arrows extends selection",
+    "Click row/column header selects it; Shift extends; Ctrl adds disjoint selection",
+    "Style > Borders selects none/single/thick/double SUM-charset grids",
+    "File > Print preview builds the real PDF and opens it with the platform viewer",
+];
+
+
 def preference_path():
-    base=Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home()/'.config')));
-    return base/'sumtui'/'ses.json';
+    base=Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home()/".config")));
+    return base/"sumtui"/"ses.json";
 
 
 def load_preferences(path=None):
     target=Path(path) if path else preference_path();
     try:
-        data=json.loads(target.read_text(encoding='utf-8'));
+        data=json.loads(target.read_text(encoding="utf-8"));
         if not isinstance(data,dict): return {};
-        return {k:data[k] for k in ('theme','grid','last_dir') if k in data};
-    except (FileNotFoundError,ValueError,OSError):
-        return {};
+        return {k:data[k] for k in ("theme","border","last_dir") if k in data};
+    except (FileNotFoundError,ValueError,OSError): return {};
 
 
 def save_preferences(data,path=None):
-    target=Path(path) if path else preference_path();
-    target.parent.mkdir(parents=True,exist_ok=True);
-    import tempfile;
-    import os as _os;
-    fd,tmp=tempfile.mkstemp(prefix='.ses-',dir=str(target.parent));
-    try:
-        with _os.fdopen(fd,'w',encoding='utf-8') as out:
-            json.dump(data,out,ensure_ascii=False,indent=2);
-            out.write('\n');
-        _os.replace(tmp,target);
-    finally:
-        if _os.path.exists(tmp): _os.unlink(tmp);
+    target=Path(path) if path else preference_path(); target.parent.mkdir(parents=True,exist_ok=True);
+    tmp=target.with_suffix(target.suffix+".tmp");
+    tmp.write_text(json.dumps(data,ensure_ascii=False,indent=2)+"\n",encoding="utf-8"); os.replace(tmp,target);
 
 
 def sample_book():
-    """Useful demo: conditions, lookups, criteria functions and cell colors."""
     book=Book();
-    # Price table used by VLOOKUP.
     data={
-        'A1':"'Code", 'B1':"'Item", 'C1':"'Price", 'D1':"'Stock",
-        'A2':"'TEA", 'B2':"'Tea", 'C2':'120', 'D2':'8',
-        'A3':"'COF", 'B3':"'Coffee", 'C3':'175', 'D3':'3',
-        'A4':"'MIL", 'B4':"'Milk", 'C4':'95', 'D4':'15',
-        'F1':"'Sale", 'G1':"'Code", 'H1':"'Qty", 'I1':"'Unit", 'J1':"'Total", 'K1':"'Status",
-        'F2':"'1", 'G2':"'TEA", 'H2':'2', 'I2':'=VLOOKUP(G2;A2:C4;3;FALSE)', 'J2':'=H2*I2', 'K2':'=IF(J2>=250;"BIG";"SMALL")',
-        'F3':"'2", 'G3':"'COF", 'H3':'1', 'I3':'=VLOOKUP(G3;A2:C4;3;FALSE)', 'J3':'=H3*I3', 'K3':'=IF(J3>=250;"BIG";"SMALL")',
-        'F4':"'3", 'G4':"'MIL", 'H4':'4', 'I4':'=VLOOKUP(G4;A2:C4;3;FALSE)', 'J4':'=H4*I4', 'K4':'=IF(J4>=250;"BIG";"SMALL")',
-        'F6':"'Sales total", 'J6':'=SUM(J2:J4)',
-        'F7':"'Big sales", 'J7':'=COUNTIF(K2:K4;"BIG")',
-        'F8':"'Tea total", 'J8':'=SUMIF(G2:G4;"TEA";J2:J4)',
-        'F9':"'Low stock", 'J9':'=COUNTIF(D2:D4;"<5")',
+        "A1":"'Code","B1":"'Item","C1":"'Price","D1":"'Stock",
+        "A2":"'TEA","B2":"'Tea","C2":"120","D2":"8",
+        "A3":"'COF","B3":"'Coffee","C3":"175","D3":"3",
+        "A4":"'MIL","B4":"'Milk","C4":"95","D4":"15",
+        "F1":"'Sale","G1":"'Code","H1":"'Qty","I1":"'Unit","J1":"'Total","K1":"'Status",
+        "F2":"'1","G2":"'TEA","H2":"2","I2":"=VLOOKUP(G2;A2:C4;3;FALSE)","J2":"=H2*I2","K2":"=IF(J2>=250;\"BIG\";\"SMALL\")",
+        "F3":"'2","G3":"'COF","H3":"1","I3":"=VLOOKUP(G3;A2:C4;3;FALSE)","J3":"=H3*I3","K3":"=IF(J3>=250;\"BIG\";\"SMALL\")",
+        "F4":"'3","G4":"'MIL","H4":"4","I4":"=VLOOKUP(G4;A2:C4;3;FALSE)","J4":"=H4*I4","K4":"=IF(J4>=250;\"BIG\";\"SMALL\")",
+        "F6":"'Sales total","J6":"=SUM(J2:J4)","F7":"'Big sales","J7":"=COUNTIF(K2:K4;\"BIG\")",
+        "F8":"'Tea total","J8":"=SUMIF(G2:G4;\"TEA\";J2:J4)","F9":"'Low stock","J9":"=COUNTIF(D2:D4;\"<5\")",
     };
-    for addr,value in data.items(): book.put(addr,value);
-    # Formatting deliberately exercises SES colors independent of the selected theme.
-    book.style(['A1','B1','C1','D1','F1','G1','H1','I1','J1','K1'],'bold',True);
-    book.style(['A1','B1','C1','D1'],'bg',4); book.style(['A1','B1','C1','D1'],'fg',15 if False else 7);
-    book.style(['F1','G1','H1','I1','J1','K1'],'bg',1);
-    book.style(['F6','F7','F8','F9'],'bold',True);
-    book.style(['J6'],'bg',2); book.style(['J7'],'bg',3); book.style(['J8'],'bg',6); book.style(['J9'],'bg',4);
-    book.style(['J6','J7','J8','J9'],'bold',True);
-    # Static colors illustrate per-cell formatting; formulas remain live.
-    # Conditional formatting rules are a later feature.
-    book.style(['K2','K3'],'fg',4); book.style(['K4'],'fg',2); book.style(['K2','K3','K4'],'bold',True);
+    for address,value in data.items(): book.put(address,value);
+    book.style(["A1","B1","C1","D1","F1","G1","H1","I1","J1","K1"],"bold",True);
+    book.style(["A1","B1","C1","D1"],"bg",4); book.style(["F1","G1","H1","I1","J1","K1"],"bg",1);
+    book.style(["F6","F7","F8","F9","J6","J7","J8","J9"],"bold",True);
+    book.style(["J6"],"bg",2); book.style(["J7"],"bg",3); book.style(["J8"],"bg",6); book.style(["J9"],"bg",4);
+    book.style(["K2","K3"],"fg",4); book.style(["K4"],"fg",2); book.style(["K2","K3","K4"],"bold",True);
     return book;
 
 
-def theme_palette(name):
-    # User themes must be registered before resolving the name.  sumedit and
-    # themeedit do the same; otherwise make_theme() silently falls back to ZX
-    # for an unknown custom theme name.
-    from sumtui.theme import make_theme, available_theme_names, refresh_user_themes;
-    refresh_user_themes();
-    names=available_theme_names(include_hidden=True);
-    aliases={'spectrum':'ZX','pc':'DOS','turbo':'DOS','commodore':'C64','sumx':'XBASE'};
-    resolved=aliases.get(name.lower(),name);
-    if resolved.casefold() not in [n.casefold() for n in names] and resolved.upper() not in ('DOS','ZX','XBASE','C64','LIGHT','DARK'):
-        raise ValueError('Unknown theme: '+name+' (try --list-themes)');
-    return make_theme(resolved);
+class FormulaLabel(Widget):
+    def __init__(self, host): super().__init__(); self.host=host;
+    def preferred_width(self,height=None): return max(10,len(self.host.book.active)+10);
+    def __rich_console__(self,console,options):
+        yield Text(f"{self.host.book.active}  {self.host.addr()}: ",style=self.theme.style("input_border"));
 
 
-def xterm_index(rgb,colors):
-    if colors<256:
-        # ANSI basic colors ordered by ncurses indices.
-        palette=[(0,0,0),(190,0,0),(0,170,0),(170,85,0),
-                 (0,0,170),(170,0,170),(0,170,170),(210,210,210)];
-        return min(range(min(colors,8)),key=lambda n:sum((a-b)**2 for a,b in zip(rgb,palette[n])));
-    levels=[0,95,135,175,215,255];
-    choices=[(16+36*r+6*g+b,(levels[r],levels[g],levels[b])) for r in range(6) for g in range(6) for b in range(6)];
-    choices.extend((232+i,(8+10*i,)*3) for i in range(24));
-    return min(choices,key=lambda item:sum((a-b)**2 for a,b in zip(rgb,item[1])))[0];
+class SpreadsheetGrid(Widget):
+    focusable=True;
+    COLW=12; ROWW=5;
+    def __init__(self,host):
+        super().__init__(); self.host=host; self.view_cols=1; self.view_rows=1;
+    def _pitch(self): return 2 if self.host.border!="none" else 1;
+    def _adjust(self):
+        h=self.layout_height or 20; w=self.layout_width or 80; pitch=self._pitch();
+        self.view_cols=max(1,(w-self.ROWW)//self.COLW); self.view_rows=max(1,(h-1)//pitch);
+        if self.host.cx<self.host.scrollx: self.host.scrollx=self.host.cx;
+        if self.host.cx>=self.host.scrollx+self.view_cols: self.host.scrollx=self.host.cx-self.view_cols+1;
+        if self.host.cy<self.host.scrolly: self.host.scrolly=self.host.cy;
+        if self.host.cy>=self.host.scrolly+self.view_rows: self.host.scrolly=self.host.cy-self.view_rows+1;
+    def _cell_style(self,cell,selected,current):
+        style=self.theme.style("selection" if selected else "viewer");
+        if cell.bold: style += " bold";
+        if cell.underline: style += " underline";
+        if current: style += " reverse";
+        # Explicit cell colors intentionally override the theme; this is spreadsheet data formatting.
+        if cell.fg!=7 or cell.bg!=0:
+            ansi=["black","red","green","yellow","blue","magenta","cyan","white"];
+            style += f" {ansi[cell.fg%8]} on {ansi[cell.bg%8]}";
+        return style;
+    def _formatted(self,address):
+        cell=self.host.book.get(address); value=self.host.book.evaluate(address);
+        text="" if value is None else (format(value,".11g") if isinstance(value,float) else str(value)); text=text[:self.COLW];
+        if cell.align=="repeat" and text: text=(text*((self.COLW//len(text))+1))[:self.COLW];
+        if cell.align=="center": return text.center(self.COLW);
+        if cell.align=="right" or (cell.align=="general" and isinstance(value,(int,float))): return text.rjust(self.COLW);
+        return text.ljust(self.COLW);
+    def _border_line(self,left,middle,right,horizontal):
+        return left + middle.join(horizontal*self.COLW for _ in range(self.view_cols)) + right;
+    def handle_event(self,event):
+        if isinstance(event,MouseEvent):
+            if event.action!="press" or event.button!="left": return False;
+            if self._focus_manager is not None: self._focus_manager.set(self);
+            self._adjust(); pitch=self._pitch();
+            if event.y==0 and event.x>=self.ROWW:
+                col=self.host.scrollx+(event.x-self.ROWW)//self.COLW; self.host.select_header("col",col,event.shift,event.ctrl); return True;
+            data_y=event.y-1;
+            if data_y<0 or data_y%pitch!=0: return True;
+            row=self.host.scrolly+data_y//pitch;
+            if event.x<self.ROWW: self.host.select_header("row",row,event.shift,event.ctrl); return True;
+            col=self.host.scrollx+(event.x-self.ROWW)//self.COLW; self.host.select_cell(col,row,event.shift,event.ctrl);
+            if event.action=="press" and getattr(event,"double",False): self.host.start_edit(False);
+            return True;
+        if not isinstance(event,KeyEvent): return False;
+        if event.key in (Key.LEFT,Key.RIGHT,Key.UP,Key.DOWN):
+            dx={Key.LEFT:-1,Key.RIGHT:1}.get(event.key,0); dy={Key.UP:-1,Key.DOWN:1}.get(event.key,0);
+            self.host.move(dx,dy,event.shift); return True;
+        if event.key==Key.PAGE_UP: self.host.move(0,-max(1,self.view_rows),event.shift); return True;
+        if event.key==Key.PAGE_DOWN: self.host.move(0,max(1,self.view_rows),event.shift); return True;
+        if event.key==Key.ENTER: self.host.start_edit(False); return True;
+        if event.key==Key.F2: self.host.start_edit(False); return True;
+        if event.text and not event.ctrl and not event.alt:
+            self.host.start_edit(True,event.text); return True;
+        return False;
+    def __rich_console__(self,console,options):
+        self.set_bounds(self.x,self.y,options.max_width,options.height or options.max_height or console.height); self._adjust();
+        lines=[]; header=Text(" "*self.ROWW,style=self.theme.style("table_header"));
+        for col in range(self.host.scrollx,self.host.scrollx+self.view_cols):
+            header.append(f"{colname(col):^{self.COLW}}",style=self.theme.style("table_header"));
+        lines.append(header);
+        border=glyphs(self.host.border);
+        if border: lines.append(Text(self._border_line(border.l,border.x,border.r,border.h),style=self.theme.style("border")));
+        for ri in range(self.view_rows):
+            row=self.host.scrolly+ri; line=Text(f"{row:>{self.ROWW-1}} ",style=self.theme.style("table_header"));
+            for col in range(self.host.scrollx,self.host.scrollx+self.view_cols):
+                address=f"{colname(col)}{row}"; cell=self.host.book.get(address); selected=self.host.contains(col,row); current=(col,row)==(self.host.cx,self.host.cy);
+                line.append(self._formatted(address),style=self._cell_style(cell,selected,current));
+                if border and col<self.host.scrollx+self.view_cols-1: line.append(border.v,style=self.theme.style("border"));
+            lines.append(line);
+            if border and ri<self.view_rows-1: lines.append(Text(self._border_line(border.l,border.x,border.r,border.h),style=self.theme.style("border")));
+        yield Group(*lines);
 
-class App:
-    def __init__(self,win,book=None,filename=None,theme='DOS',grid=False,preferences=None):
-        self.win=win; self.book=book if book is not None else Book(); self.cx=1; self.cy=1
-        self.scrollx=1; self.scrolly=1; self.anchor=None; self.extra=[]
-        self.mode='cell'; self.grid=bool(grid); self.clipboard=None
-        self.message='READY'; self.file=str(filename) if filename else None; self.running=True
-        self.theme_name=theme; self.preferences=preferences or {}; self.theme=None; self.theme_pairs={}
-        self.menu_names=list(MENUS); self.mouse_anchor=None
-        self.colors=False
-        try:
-            curses.start_color(); curses.use_default_colors()
-            for bg in range(8):
-                for fg in range(8):
-                    curses.init_pair(1+bg*8+fg,fg,bg)
-            self.colors=True
-        except (curses.error,ValueError): pass
-        self.apply_theme(theme)
-        try: curses.curs_set(0)
-        except curses.error: pass
-        curses.mousemask(curses.ALL_MOUSE_EVENTS|curses.REPORT_MOUSE_POSITION)
-        win.keypad(True); win.timeout(-1)
 
-    def _style_attr(self,style_text,pair_number):
-        """Translate a sumTUI/Rich style into a curses attribute.
-
-        This intentionally consumes Theme.style(role), not raw Theme color fields,
-        so user style_overrides (for example theme MC) are honored exactly like
-        other sumTUI applications.
-        """
-        style=Style.parse(str(style_text or '')); attr=0;
-        if style.bold: attr|=curses.A_BOLD
-        if style.underline: attr|=curses.A_UNDERLINE
-        if style.reverse: attr|=curses.A_REVERSE
-        if style.dim: attr|=curses.A_DIM
-        if getattr(curses,'A_ITALIC',0) and style.italic: attr|=curses.A_ITALIC
-        if not self.colors or pair_number>=curses.COLOR_PAIRS: return attr
-        def rgb(color, fallback):
-            if color is None: return fallback
-            try:
-                triplet=color.get_truecolor()
-                return (triplet.red,triplet.green,triplet.blue)
-            except Exception: return fallback
-        fore=rgb(style.color,self.theme.text); back=rgb(style.bgcolor,self.theme.bg);
-        try:
-            curses.init_pair(pair_number,xterm_index(fore,curses.COLORS),xterm_index(back,curses.COLORS));
-            attr|=curses.color_pair(pair_number)
-        except (curses.error,ValueError): pass
-        return attr
-
-    def apply_theme(self,name):
-        self.theme=theme_palette(str(name)); self.theme_name=self.theme.name;
-        self.theme_pairs={};
-        # Semantic roles match sumTUI itself. This also honors per-role overrides
-        # saved by sumtheme/themeedit instead of rebuilding a second theme system.
-        roles={'menu':'menu_bar','formula':'input','headers':'table_header',
-               'body':'viewer','status':'status','selection':'selection',
-               'grid':'border','prompt':'input_focus'};
-        for number,(local,semantic) in enumerate(roles.items(),65):
-            self.theme_pairs[local]=self._style_attr(self.theme.style(semantic),number);
-
-    def shade(self,role):
-        return self.theme_pairs.get(role,0);
-
-    def pref_snapshot(self):
-        return {'theme':self.theme_name,'grid':self.grid,
-                'last_dir':str(Path(self.file).expanduser().resolve().parent) if self.file else self.preferences.get('last_dir',str(Path.cwd()))};
-
-    def persist(self):
-        try: save_preferences(self.pref_snapshot());
-        except OSError as exc: self.message=f'Preferences not saved: {exc}';
-
-    def shared_dialog(self,kind,path='.',title='Open SES'):
-        # sumTUI has its own event loop; suspend curses to prevent two screen owners.
-        from sumtui.dialogs import choose_file,read_entry;
-        curses.def_prog_mode(); curses.endwin();
-        try:
-            if kind=='open': return choose_file(path=path,title=title,theme=self.theme_name);
-            return read_entry(text='File name or full path',default=path,title=title,theme=self.theme_name);
-        finally:
-            curses.reset_prog_mode();
-            self.win.clear(); self.win.refresh();
-
-    def open_dialog(self):
-        path=self.preferences.get('last_dir',str(Path.cwd()));
-        result=self.shared_dialog('open',path,title='SES - Open');
-        if result.accepted and str(result.value).strip():
-            self.command('open '+str(result.value));
-
-    def save_as_dialog(self):
-        suggestion=self.file or str(Path(self.preferences.get('last_dir',str(Path.cwd())))/'book.ses');
-        result=self.shared_dialog('entry',suggestion,title='SES - Save as (full path)');
-        if result.accepted and str(result.value).strip():
-            target=Path(str(result.value)).expanduser();
-            if target.exists():
-                from sumtui.dialogs import ask_question;
-                curses.def_prog_mode(); curses.endwin();
-                try: answer=ask_question(f'Overwrite {target.name}?',theme=self.theme_name);
-                finally: curses.reset_prog_mode(); self.win.clear(); self.win.refresh();
-                if not answer.accepted: return;
-            self.command('save '+str(target));
-
-    def addr(self): return f'{colname(self.cx)}{self.cy}'
-    def limits(self):
-        h,w=self.win.getmaxyx()
-        return h,w,max(1,(w-5)//12),max(1,(h-6)//(2 if self.grid else 1))
+class SESController:
+    def __init__(self,book=None,filename=None,theme="DOS",border="none",preferences=None):
+        refresh_user_themes(); self.book=book or Book(); self.file=str(filename) if filename else None; self.preferences=preferences or {};
+        self.cx=1; self.cy=1; self.scrollx=1; self.scrolly=1; self.anchor=None; self.extra=[]; self.mode="cell"; self.border=border;
+        self.clipboard=None; self.message="READY"; self.theme_name=theme;
+        self.app=Application("SES",theme=theme,capture_control_keys=True,mouse=True);
+        self.formula=TextInput("",on_submit=self._formula_submit); self.formula_label=FormulaLabel(self); self.grid=SpreadsheetGrid(self); self.status=StatusBar();
+        self.menu=self._menu(); self.root=MenuDesktop(self.menu,VBox(HBox(self.formula_label,self.formula,sizes=[None,None]),self.grid,self.status,sizes=[1,None,1]));
+        self.app.set_root(self.root); self.app.focus.set(self.grid); self._install_bindings(); self.refresh_formula(); self.refresh_status();
+    def addr(self): return f"{colname(self.cx)}{self.cy}";
     def rects(self):
-        if self.anchor is None: base=(self.cx,self.cy,self.cx,self.cy)
+        if self.anchor is None: base=(self.cx,self.cy,self.cx,self.cy);
         else:
-            x,y=self.anchor
-            if self.mode=='row': base=(1,min(y,self.cy),256,max(y,self.cy))
-            elif self.mode=='col': base=(min(x,self.cx),1,max(x,self.cx),8192)
-            else: base=(min(x,self.cx),min(y,self.cy),max(x,self.cx),max(y,self.cy))
-        return [*self.extra,base]
-    def contains(self,x,y):
-        return any(x1<=x<=x2 and y1<=y<=y2 for x1,y1,x2,y2 in self.rects())
+            x,y=self.anchor;
+            if self.mode=="row": base=(1,min(y,self.cy),256,max(y,self.cy));
+            elif self.mode=="col": base=(min(x,self.cx),1,max(x,self.cx),8192);
+            else: base=(min(x,self.cx),min(y,self.cy),max(x,self.cx),max(y,self.cy));
+        return [*self.extra,base];
+    def contains(self,x,y): return any(a<=x<=c and b<=y<=d for a,b,c,d in self.rects());
     def selected(self):
-        out=[]; seen=set()
-        for x1,y1,x2,y2 in self.rects():
-            cells=(x2-x1+1)*(y2-y1+1)
-            if cells>50000: raise SheetError('#RANGE!','Select fewer than 50,000 cells for this command')
-            for y in range(y1,y2+1):
-                for x in range(x1,x2+1):
-                    addr=f'{colname(x)}{y}'
-                    if addr not in seen: out.append(addr); seen.add(addr)
-        return out
+        out=[]; seen=set();
+        for a,b,c,d in self.rects():
+            if (c-a+1)*(d-b+1)>50000: raise SheetError("#RANGE!","Select fewer than 50,000 cells");
+            for y in range(b,d+1):
+                for x in range(a,c+1):
+                    address=f"{colname(x)}{y}";
+                    if address not in seen: seen.add(address); out.append(address);
+        return out;
     def range_spec(self):
-        r=self.rects()[-1]; a,b,c,d=r
-        return f'{colname(a)}{b}:{colname(c)}{d}'
-    def adjust(self):
-        _,_,cols,rows=self.limits()
-        if self.cx<self.scrollx: self.scrollx=self.cx
-        if self.cx>=self.scrollx+cols: self.scrollx=self.cx-cols+1
-        if self.cy<self.scrolly: self.scrolly=self.cy
-        if self.cy>=self.scrolly+rows: self.scrolly=self.cy-rows+1
-    def put(self,y,x,s,attr=0):
-        h,w=self.win.getmaxyx()
-        if y<0 or x<0 or y>=h or x>=w: return
-        try: self.win.addnstr(y,x,str(s),max(0,w-x-1),attr)
-        except curses.error: pass
-    def draw(self):
-        self.adjust(); self.win.erase(); h,w,cols,rows=self.limits()
-        self.put(0,0,'  '.join(self.menu_names),self.shade('menu'))
-        self.put(1,0,f'{self.book.active}  {self.addr()}: {self.book.get(self.addr()).raw}',self.shade('formula'))
-        self.put(2,0,'    '+''.join(f'{colname(x):^12}' for x in range(self.scrollx,self.scrollx+cols)),self.shade('headers'))
-        for idx in range(rows):
-            yy=3+idx*(2 if self.grid else 1); row=self.scrolly+idx
-            row_selected=self.mode=='row' and self.contains(self.cx,row)
-            self.put(yy,0,f'{row:>4}',self.shade('headers')|(curses.A_BOLD if row_selected else 0))
-            for j in range(cols):
-                col=self.scrollx+j; key=f'{colname(col)}{row}'
-                cell=self.book.get(key); val=self.book.evaluate(key)
-                s='' if val is None else (format(val,'.11g') if isinstance(val,float) else str(val))
-                if cell.align=='repeat' and s: s=s*((12//len(s))+1)
-                s=s[:12]
-                if cell.align=='center': s=s.center(12)
-                elif cell.align=='right' or (cell.align=='general' and isinstance(val,(int,float))): s=s.rjust(12)
-                else: s=s.ljust(12)
-                attr=self.shade('body')|(curses.A_BOLD if cell.bold else 0)|(curses.A_UNDERLINE if cell.underline else 0)
-                if self.colors and (cell.fg!=7 or cell.bg!=0): attr=curses.color_pair(1+int(cell.bg)%8*8+int(cell.fg)%8)|(attr & (curses.A_BOLD|curses.A_UNDERLINE))
-                if self.contains(col,row): attr=self.shade('selection')|(attr & (curses.A_BOLD|curses.A_UNDERLINE))
-                if col==self.cx and row==self.cy: attr|=curses.A_BOLD|curses.A_UNDERLINE
-                self.put(yy,4+12*j,s,attr)
-                if self.grid:
-                    self.put(yy,4+12*j+11,'│',self.shade('grid'))
-            if self.grid and idx<rows-1:
-                self.put(yy+1,4,('───────────┼'*cols)[:max(0,w-5)],self.shade('grid'))
-        if self.grid:
-            # One-line separators in the existing cell width; no layout/scroll changes.
-            self.put(2,4,'┼'+''.join('───────────┼' for _ in range(cols))[:max(0,w-6)],self.shade('headers'))
-            self.put(2,4,''.join(f'{colname(x):^11}│' for x in range(self.scrollx,self.scrollx+cols))[:w-5],self.shade('headers'))
-        self.put(h-2,0,'─'*(w-1),self.shade('grid'))
-        amount=sum((c-a+1)*(d-b+1) for a,b,c,d in self.rects())
-        self.put(h-1,0,f'{self.book.active} | {self.addr()} | {amount} selected | {self.message}',self.shade('status'))
-        self.win.refresh()
-    def prompt(self,title,default=''):
-        h,w=self.win.getmaxyx(); self.put(h-1,0,' '*(w-1),self.shade('prompt'))
-        self.put(h-1,0,title+default,self.shade('prompt'))
-        curses.echo()
-        try: curses.curs_set(1)
-        except curses.error: pass
-        try:
-            result=self.win.getstr(h-1,min(w-2,len(title)),max(1,w-len(title)-2))
-            return result.decode('utf-8') or default
-        finally:
-            curses.noecho()
-            try: curses.curs_set(0)
-            except curses.error: pass
-    def modal(self,lines):
-        self.draw(); h,w=self.win.getmaxyx()
-        top=max(1,(h-min(h-2,len(lines)+3))//2)
-        width=min(w-2,max(32,max(map(len,lines))+3))
-        for i,s in enumerate(lines[:max(0,h-top-2)]):
-            self.put(top+i,1,s.ljust(width-2),curses.A_REVERSE)
-        self.put(min(h-1,top+len(lines)),1,'Any key closes',curses.A_BOLD)
-        self.win.refresh(); self.win.getch()
-    def edit(self,replace=False,initial=''):
-        addr=self.addr(); original=self.book.get(addr).raw
-        value=initial if replace else original; pos=len(value)
-        pick=False; old_cursor=(self.cx,self.cy)
-        try:
-            while True:
-                self.draw(); h,w=self.win.getmaxyx()
-                if pick:
-                    self.put(h-1,0,('PICK '+self.range_spec()+'  Enter: insert; Esc: cancel').ljust(w-1),self.shade('status'))
-                    try: curses.curs_set(0)
-                    except curses.error: pass
-                else:
-                    # Edit in formula bar, with a real visible cursor on the current character.
-                    prefix=f'{self.addr()} ▸ '
-                    usable=max(1,w-len(prefix)-2)
-                    offset=max(0,pos-usable+1)
-                    self.put(1,0,' '*(w-1),self.shade('formula'))
-                    self.put(1,0,prefix+value[offset:offset+usable],self.shade('formula')|curses.A_UNDERLINE)
-                    self.put(h-1,0,'EDIT: Enter confirms / Esc cancels / Tab selects range'.ljust(w-1),self.shade('status'))
-                    try: curses.curs_set(1)
-                    except curses.error: pass
-                    try: self.win.move(1,min(w-2,len(prefix)+pos-offset))
-                    except curses.error: pass
-                self.win.refresh(); k=self.win.getch()
-                if pick:
-                    if k in (10,13,curses.KEY_ENTER):
-                        rect=self.rects()[-1]
-                        x1,y1,x2,y2=rect
-                        ref=f'{colname(x1)}{y1}'
-                        if (x1,y1)!=(x2,y2): ref+=f':{colname(x2)}{y2}'
-                        value=value[:pos]+ref+value[pos:]; pos+=len(ref)
-                        pick=False; self.anchor=None; self.extra=[]; self.mode='cell'
-                    elif k==27:
-                        pick=False; self.anchor=None; self.mode='cell'
-                    elif k==curses.KEY_MOUSE: self.mouse(allow_edit=False)
-                    else: self.navigation(k)
-                    continue
-                if k in (10,13,curses.KEY_ENTER):
-                    self.book.put(addr,value); self.message='Cell updated'; return
-                if k==27: self.message='Edit cancelled'; return
-                if k==9:
-                    pick=True; self.mode='cell'; self.anchor=None; continue
-                if k in (curses.KEY_BACKSPACE,127,8):
-                    if pos: value=value[:pos-1]+value[pos:]; pos-=1
-                elif k==curses.KEY_DC: value=value[:pos]+value[pos+1:]
-                elif k==curses.KEY_LEFT: pos=max(0,pos-1)
-                elif k==curses.KEY_RIGHT: pos=min(len(value),pos+1)
-                elif k==curses.KEY_HOME: pos=0
-                elif k==curses.KEY_END: pos=len(value)
-                elif 32<=k<=0x10ffff:
-                    try:
-                        ch=chr(k); value=value[:pos]+ch+value[pos:]; pos+=1
-                    except ValueError: pass
-        finally:
-            self.cx,self.cy=old_cursor
-            try: curses.curs_set(0)
-            except curses.error: pass
-    def navigation(self,k):
-        dx=dy=0; extend=False
-        shifted={getattr(curses,'KEY_SLEFT',-99):(-1,0),getattr(curses,'KEY_SRIGHT',-98):(1,0),
-                 getattr(curses,'KEY_SUP',-97):(0,-1),getattr(curses,'KEY_SDOWN',-96):(0,1)}
-        if k in shifted: dx,dy=shifted[k]; extend=True
-        elif k==curses.KEY_LEFT: dx=-1
-        elif k==curses.KEY_RIGHT: dx=1
-        elif k==curses.KEY_UP: dy=-1
-        elif k==curses.KEY_DOWN: dy=1
-        elif k==curses.KEY_NPAGE: dy=10
-        elif k==curses.KEY_PPAGE: dy=-10
-        else: return False
-        if extend:
-            if self.anchor is None: self.anchor=(self.cx,self.cy)
-        else: self.anchor=None; self.extra=[]; self.mode='cell'
-        self.cx=max(1,self.cx+dx); self.cy=max(1,self.cy+dy)
-        return True
-    def mouse(self,allow_edit=True):
-        try: _,x,y,_,state=curses.getmouse()
-        except curses.error: return
-        h,w,cols,rows=self.limits()
-        clickmask=(getattr(curses,'BUTTON1_CLICKED',0)|getattr(curses,'BUTTON1_PRESSED',0)
-                   |getattr(curses,'BUTTON1_DOUBLE_CLICKED',0)|getattr(curses,'BUTTON1_RELEASED',0))
-        if not state&clickmask: return
-        shift=bool(state&getattr(curses,'BUTTON_SHIFT',0)); control=bool(state&getattr(curses,'BUTTON_CTRL',0))
-        if y==1:
-            if allow_edit: self.edit()
-            return
-        if y==2 and x>=4:
-            col=self.scrollx+(x-4)//12; row=self.cy; mode='col'
-        elif 3<=y<3+rows*(2 if self.grid else 1) and ((y-3)%(2 if self.grid else 1))==0 and x<4:
-            col=self.cx; row=self.scrolly+(y-3)//(2 if self.grid else 1); mode='row'
-        elif 3<=y<3+rows*(2 if self.grid else 1) and ((y-3)%(2 if self.grid else 1))==0 and 4<=x<4+cols*12:
-            col=self.scrollx+(x-4)//12; row=self.scrolly+(y-3)//(2 if self.grid else 1); mode='cell'
-        else: return
-        if control:
-            self.extra=self.rects(); self.anchor=None
-        elif not shift:
-            self.extra=[]; self.anchor=None
-        if shift and self.anchor is None: self.anchor=(self.cx,self.cy)
-        self.mode=mode; self.cx=col; self.cy=row
-        if mode!='cell' and self.anchor is None: self.anchor=(col,row)
-        if allow_edit and state&getattr(curses,'BUTTON1_DOUBLE_CLICKED',0) and mode=='cell': self.edit()
-    def clipboard_copy(self,cut=False):
-        rects=self.rects()
-        if len(rects)!=1: raise SheetError('#RANGE!','Copy one rectangular selection at a time')
-        a,b,c,d=rects[0]
-        if (c-a+1)*(d-b+1)>50000: raise SheetError('#RANGE!')
-        # Clipboard is an internal reference snapshot; pasted cells copy from this snapshot.
-        import copy
-        from .engine import Cell
-        data={(x-a,y-b):copy.deepcopy(self.book.get(f'{colname(x)}{y}'))
-              for y in range(b,d+1) for x in range(a,c+1)}
-        self.clipboard=(a,b,data,cut)
-        self.message=('Cut' if cut else 'Copied')+f' {colname(a)}{b}:{colname(c)}{d}'
+        a,b,c,d=self.rects()[-1]; return f"{colname(a)}{b}:{colname(c)}{d}";
+    def select_cell(self,col,row,shift=False,ctrl=False):
+        if ctrl: self.extra=self.rects(); self.anchor=None;
+        elif not shift: self.extra=[]; self.anchor=None;
+        if shift and self.anchor is None: self.anchor=(self.cx,self.cy);
+        self.mode="cell"; self.cx=max(1,col); self.cy=max(1,row); self.selection_changed();
+    def select_header(self,kind,value,shift=False,ctrl=False):
+        if ctrl: self.extra=self.rects(); self.anchor=None;
+        elif not shift: self.extra=[]; self.anchor=None;
+        if shift and self.anchor is None: self.anchor=(self.cx,self.cy);
+        self.mode=kind;
+        if kind=="row": self.cy=max(1,value);
+        else: self.cx=max(1,value);
+        if self.anchor is None: self.anchor=(self.cx,self.cy);
+        self.selection_changed();
+    def move(self,dx,dy,extend=False):
+        if extend and self.anchor is None: self.anchor=(self.cx,self.cy);
+        if not extend: self.anchor=None; self.extra=[]; self.mode="cell";
+        self.cx=max(1,self.cx+dx); self.cy=max(1,self.cy+dy); self.selection_changed();
+    def selection_changed(self): self.refresh_formula(); self.refresh_status(); self.app.invalidate();
+    def refresh_formula(self):
+        raw=self.book.get(self.addr()).raw; self.formula.set(raw); self.formula.cursor=len(self.formula.value);
+    def refresh_status(self):
+        count=sum((c-a+1)*(d-b+1) for a,b,c,d in self.rects()); self.status.set(f"{self.book.active} | {self.addr()} | {count} selected | {self.message}");
+    def note(self,text): self.message=str(text); self.refresh_status(); self.app.invalidate(); return True;
+    def start_edit(self,replace=False,initial=""):
+        value=initial if replace else self.book.get(self.addr()).raw; self.formula.set(value); self.formula.cursor=len(value); self.app.focus.set(self.formula); self.note("EDIT: Enter confirms / Esc cancels"); return True;
+    def _formula_submit(self,value):
+        try: self.book.put(self.addr(),value); self.note("Cell updated");
+        except SheetError as exc: self.note(str(exc)); return True;
+        self.app.focus.set(self.grid); self.refresh_formula(); return True;
+    def cancel_edit(self): self.refresh_formula(); self.app.focus.set(self.grid); self.note("Edit cancelled"); return True;
+    def _menu(self):
+        colors=["Black","Red","Green","Yellow","Blue","Magenta","Cyan","White"];
+        def color_menu(attr): return Menu(attr.title(),[MenuItem(name,lambda n=i,a=attr:self.set_color(a,n)) for i,name in enumerate(colors)]);
+        border_menu=Menu("Borders",[MenuItem(name.title(),lambda n=name:self.set_border(n),radio=lambda n=name:self.border==n) for name in border_names()]);
+        style_menu=Menu("Style",[
+            MenuItem("Bold",self.toggle_bold,"Ctrl+B"),MenuItem("Underline",self.toggle_underline,"Ctrl+U"),Separator(),
+            MenuItem("Foreground",submenu=color_menu("fg")),MenuItem("Background",submenu=color_menu("bg")),
+            MenuItem("Borders",submenu=border_menu),Separator(),
+            MenuItem("Align left",lambda:self.align("left")),MenuItem("Align center",lambda:self.align("center")),MenuItem("Align right",lambda:self.align("right")),
+        ]);
+        return MenuBar([
+            Menu("File",[MenuItem("New",self.new),MenuItem("Open",self.open_dialog),MenuItem("Save",self.save,"Ctrl+S"),MenuItem("Save as",self.save_as),Separator(),MenuItem("Print preview",self.preview),Separator(),MenuItem("Add sheet",self.add_sheet),MenuItem("Quit",self.quit)]),
+            Menu("Edit",[MenuItem("Undo",self.undo,"Ctrl+Z"),MenuItem("Redo",self.redo,"Ctrl+Y"),Separator(),MenuItem("Copy",self.copy,"Ctrl+C"),MenuItem("Cut",self.cut,"Ctrl+X"),MenuItem("Paste",self.paste,"Ctrl+V"),Separator(),MenuItem("Fill down",lambda:self.fill("down")),MenuItem("Fill right",lambda:self.fill("right")),Separator(),MenuItem("Insert row",self.insert_row),MenuItem("Insert column",self.insert_col)]),
+            style_menu,
+            Menu("Data",[MenuItem("Recalculate",self.recalculate,"F9"),MenuItem("Go to cell",self.goto,"F5")]),
+            Menu("Tools",[MenuItem("Theme",self.choose_theme)]),
+            Menu("Help",[MenuItem("Keys",self.help),MenuItem("About",self.about)]),
+        ],on_close=lambda:self.app.focus.set(self.grid));
+    def _install_bindings(self):
+        bindings={"f1":self.help,"f2":lambda:self.start_edit(False),"f5":self.goto,"f6":self.next_sheet,"f9":self.recalculate,"f10":self.open_menu,
+                  "ctrl+z":self.undo,"ctrl+y":self.redo,"ctrl+c":self.copy,"ctrl+x":self.cut,"ctrl+v":self.paste,"ctrl+b":self.toggle_bold,"ctrl+u":self.toggle_underline,"ctrl+s":self.save,"escape":self.cancel_edit};
+        for key,callback in bindings.items(): self.app.bind(key,callback);
+    def open_menu(self): self.menu.open(); self.app.focus.set(self.menu); self.app.invalidate(); return True;
+    def _external(self,callback): return self.app.run_external(callback);
+    def persist(self):
+        try: save_preferences({"theme":self.theme_name,"border":self.border,"last_dir":str(Path(self.file).expanduser().resolve().parent) if self.file else self.preferences.get("last_dir",str(Path.cwd()))});
+        except OSError as exc: self.note(f"Preferences not saved: {exc}");
+    def new(self): self.book=Book(); self.file=None; self.selection_changed(); self.note("New workbook"); return True;
+    def open_dialog(self):
+        start=self.preferences.get("last_dir",str(Path.cwd())); result=self._external(lambda:choose_file(path=start,title="Open SES",theme=self.theme_name));
+        if not result.accepted: return True;
+        try: self.book=Book.load(Path(result.value)); self.file=str(result.value); self.cx=self.cy=1; self.persist(); self.selection_changed(); self.note(f"Opened {self.file}");
+        except Exception as exc: self.note(f"ERROR {exc}");
+        return True;
+    def save(self):
+        if not self.file: return self.save_as();
+        try: self.book.save(self.file); self.persist(); self.note(f"Saved {self.file}");
+        except OSError as exc: self.note(f"ERROR {exc}");
+        return True;
+    def save_as(self):
+        default=self.file or str(Path(self.preferences.get("last_dir",str(Path.cwd())))/"workbook.ses");
+        result=self._external(lambda:read_entry(text="File name or full path",default=default,title="Save SES as",theme=self.theme_name));
+        if not result.accepted or not result.value: return True;
+        target=Path(result.value).expanduser();
+        if target.exists():
+            answer=self._external(lambda:ask_question(f"Overwrite {target.name}?",theme=self.theme_name));
+            if not answer.accepted: return True;
+        self.file=str(target); return self.save();
+    def add_sheet(self):
+        result=self._external(lambda:read_entry(text="Sheet name",title="Add sheet",theme=self.theme_name));
+        if result.accepted and result.value:
+            try: self.book.add_sheet(result.value); self.note("Sheet added");
+            except Exception as exc: self.note(f"ERROR {exc}");
+        return True;
+    def quit(self): self.persist(); self.app.stop(); return True;
+    def undo(self): self.book.undo(); self.refresh_formula(); self.note("Undo"); return True;
+    def redo(self): self.book.redo(); self.refresh_formula(); self.note("Redo"); return True;
+    def _copy_snapshot(self,cut=False):
+        rects=self.rects();
+        if len(rects)!=1: raise SheetError("#RANGE!","Copy one rectangular selection at a time");
+        a,b,c,d=rects[0];
+        if (c-a+1)*(d-b+1)>50000: raise SheetError("#RANGE!");
+        data={(x-a,y-b):copy.deepcopy(self.book.get(f"{colname(x)}{y}")) for y in range(b,d+1) for x in range(a,c+1)};
+        self.clipboard=(a,b,c,d,data,cut); self.note(("Cut" if cut else "Copied")+f" {colname(a)}{b}:{colname(c)}{d}"); return True;
+    def copy(self):
+        try: return self._copy_snapshot(False);
+        except SheetError as exc: return self.note(str(exc));
+    def cut(self):
+        try: return self._copy_snapshot(True);
+        except SheetError as exc: return self.note(str(exc));
     def paste(self):
-        import copy
-        from .engine import transform_formula,Cell
-        if not self.clipboard: self.message='Clipboard empty'; return
-        sx,sy,data,cut=self.clipboard; dx,dy=self.cx,self.cy
+        if not self.clipboard: return self.note("Clipboard empty");
+        sx,sy,ex,ey,data,cut=self.clipboard; dx,dy=self.cx,self.cy;
         def apply():
-            cells=self.book.sheets[self.book.active].cells
+            cells=self.book.sheets[self.book.active].cells;
             if cut:
-                for ox,oy in data: cells.pop(f'{colname(sx+ox)}{sy+oy}',None)
-            for (ox,oy),source in data.items():
-                c=copy.deepcopy(source)
-                if c.raw.startswith(('=','+','@')) and not cut:
-                    c.raw=c.raw[:1]+transform_formula(c.raw[1:],dx-sx,dy-sy)
-                addr=f'{colname(dx+ox)}{dy+oy}'
-                if c==Cell(): cells.pop(addr,None)
-                else: cells[addr]=c
-        self.book.change(apply)
-        if cut: self.clipboard=None
-        self.message='Pasted'
-    def command(self,line):
-        parts=line.strip().split(); cmd=parts[0].lower() if parts else ''
+                for y in range(sy,ey+1):
+                    for x in range(sx,ex+1): cells.pop(f"{colname(x)}{y}",None);
+            for (ox,oy),cell in data.items():
+                target=copy.deepcopy(cell);
+                if not cut and target.raw.startswith(("=","+","@")): target.raw=transform_formula(target.raw,dx-sx,dy-sy);
+                cells[f"{colname(dx+ox)}{dy+oy}"]=target;
+        self.book.change(apply); self.book.dirty=True;
+        if cut: self.clipboard=None;
+        return self.note("Pasted");
+    def fill(self,direction):
+        try: self.book.fill(self.range_spec(),direction); return self.note(f"Fill {direction}");
+        except SheetError as exc: return self.note(str(exc));
+    def insert_row(self): self.book.insert("row",self.cy); self.refresh_formula(); return self.note("Row inserted");
+    def insert_col(self): self.book.insert("col",self.cx); self.refresh_formula(); return self.note("Column inserted");
+    def toggle_bold(self):
+        try: self.book.toggle_bold(self.selected()); return self.note("Bold toggled");
+        except SheetError as exc: return self.note(str(exc));
+    def toggle_underline(self):
+        try: self.book.style(self.selected(),"underline"); return self.note("Underline toggled");
+        except SheetError as exc: return self.note(str(exc));
+    def set_color(self,attr,value):
+        try: self.book.style(self.selected(),attr,value); return self.note(f"{attr.upper()}={value}");
+        except SheetError as exc: return self.note(str(exc));
+    def align(self,value):
+        try: self.book.style(self.selected(),"align",value); return self.note("Alignment changed");
+        except SheetError as exc: return self.note(str(exc));
+    def set_border(self,name): self.border=name; self.persist(); return self.note(f"Border: {name}");
+    def recalculate(self): self.book.dirty=True; self.note("Recalculated"); return True;
+    def goto(self):
+        result=self._external(lambda:read_entry(text="Cell",default=self.addr(),title="Go to",theme=self.theme_name));
+        if result.accepted:
+            try: self.cx,self.cy,*_=cellref(result.value); self.anchor=None; self.extra=[]; self.mode="cell"; self.selection_changed();
+            except Exception as exc: self.note(f"ERROR {exc}");
+        return True;
+    def next_sheet(self):
+        names=list(self.book.sheets); self.book.active=names[(names.index(self.book.active)+1)%len(names)]; self.book.dirty=True; self.selection_changed(); return True;
+    def choose_theme(self):
+        result=self._external(lambda:choose_list(available_theme_names(),title="SES theme",theme=self.theme_name));
+        if result.accepted:
+            self.theme_name=str(result.value); self.app.set_theme(self.theme_name); self.persist(); self.note("Theme "+self.theme_name);
+        return True;
+    def preview(self):
         try:
-            if cmd=='save':
-                target=line.strip()[len(parts[0]):].strip() or self.file
-                if not target: self.save_as_dialog(); return
-                self.book.save(Path(target).expanduser()); self.file=str(Path(target).expanduser()); self.message=f'Saved {self.file}'; self.persist()
-            elif cmd=='open':
-                target=line.strip()[len(parts[0]):].strip()
-                if not target: self.open_dialog(); return
-                candidate=Book.load(Path(target).expanduser()); self.book=candidate; self.file=str(Path(target).expanduser()); self.message=f'Opened {self.file}'; self.persist()
-            elif cmd=='sheet': self.book.add_sheet(' '.join(parts[1:])); self.message='Sheet added'
-            elif cmd=='goto': self.cx,self.cy,*_=cellref(parts[1]); self.mode='cell'; self.anchor=None; self.extra=[]
-            elif cmd=='select':
-                a,b=parts[1].split(':'); self.cx,self.cy,*_=cellref(b); self.anchor=cellref(a)[:2]; self.mode='cell'; self.extra=[]
-            elif cmd=='copy' and len(parts)>=3: self.book.copy_block(parts[1],parts[2]); self.message='Block copied'
-            elif cmd=='cut' and len(parts)>=3: self.book.copy_block(parts[1],parts[2],move=True); self.message='Block moved'
-            elif cmd=='copy': self.clipboard_copy()
-            elif cmd=='cut': self.clipboard_copy(cut=True)
-            elif cmd=='paste': self.paste()
-            elif cmd=='bold': self.book.toggle_bold(self.selected()); self.message='Bold toggled'
-            elif cmd=='underline': self.book.style(self.selected(),'underline'); self.message='Underline toggled'
-            elif cmd in ('fg','bg'):
-                color=int(parts[1]);
-                if color not in range(8): raise ValueError('Color number must be 0..7')
-                self.book.style(self.selected(),cmd,color); self.message=f'{cmd.upper()} set to {color}'
-            elif cmd=='align': self.book.style(self.selected(),'align',parts[1].lower()); self.message='Alignment changed'
-            elif cmd=='grid': self.grid=not self.grid; self.message='Grid '+('on' if self.grid else 'off'); self.persist()
-            elif cmd=='theme': self.apply_theme(parts[1]); self.message='Theme '+self.theme_name; self.persist()
-            elif cmd=='row': self.book.insert('row',int(parts[1])); self.message='Row inserted'
-            elif cmd=='col':
-                spec=parts[1].upper(); x=cellref(spec+'1')[0] if spec.isalpha() else int(spec)
-                self.book.insert('col',x); self.message='Column inserted'
-            elif cmd=='fill': self.book.fill(parts[2] if len(parts)>2 else self.range_spec(),parts[1].lower()); self.message='Range filled'
-            elif cmd=='undo': self.book.undo()
-            elif cmd=='redo': self.book.redo()
-            elif cmd=='help': self.modal(HELP)
-            elif cmd=='quit': self.persist(); self.running=False
-            elif cmd: self.message=f'Unknown command: {cmd}'
-        except (SheetError,ValueError,IndexError,KeyError,OSError) as e:
-            self.message=f'ERROR {e}'
-    def show_menu(self):
-        idx=sub=0
-        while True:
-            self.draw(); h,w=self.win.getmaxyx()
-            x=sum(len(n)+2 for n in self.menu_names[:idx]); options=MENUS[self.menu_names[idx]]
-            for i,n in enumerate(self.menu_names):
-                xx=sum(len(k)+2 for k in self.menu_names[:i]); self.put(0,xx,n,curses.A_REVERSE|curses.A_BOLD if i==idx else 0)
-            x=max(0,min(w-25,x))
-            for i,opt in enumerate(options):
-                self.put(3+i,x,(' '+opt.ljust(21)+' ')[:max(0,w-x-1)],curses.A_REVERSE if i==sub else 0)
-            self.win.refresh(); k=self.win.getch()
-            if k==27: return
-            if k==curses.KEY_LEFT: idx=(idx-1)%len(self.menu_names); sub=0
-            elif k==curses.KEY_RIGHT: idx=(idx+1)%len(self.menu_names); sub=0
-            elif k==curses.KEY_UP: sub=(sub-1)%len(options)
-            elif k==curses.KEY_DOWN: sub=(sub+1)%len(options)
-            elif k in (10,13,curses.KEY_ENTER):
-                action=options[sub]
-                if action=='New': self.book=Book(); self.file=None; self.message='New workbook'
-                elif action=='Open': self.open_dialog()
-                elif action=='Save': self.command('save')
-                elif action=='Save as': self.save_as_dialog()
-                elif action=='Add sheet': self.command('sheet '+self.prompt('Name: '))
-                elif action=='Quit': self.persist(); self.running=False
-                elif action=='Undo': self.command('undo')
-                elif action=='Redo': self.command('redo')
-                elif action=='Copy': self.command('copy')
-                elif action=='Cut': self.command('cut')
-                elif action=='Paste': self.command('paste')
-                elif action=='Fill down': self.command('fill down')
-                elif action=='Fill right': self.command('fill right')
-                elif action=='Insert row': self.command(f'row {self.cy}')
-                elif action=='Insert column': self.command(f'col {colname(self.cx)}')
-                elif action=='Select range': self.command('select '+self.prompt('Range: '))
-                elif action=='Bold': self.command('bold')
-                elif action=='Underline': self.command('underline')
-                elif action=='Foreground': self.command('fg '+self.prompt('FG 0..7: '))
-                elif action=='Background': self.command('bg '+self.prompt('BG 0..7: '))
-                elif action.startswith('Align '): self.command('align '+action[6:].lower())
-                elif action=='Grid lines': self.command('grid')
-                elif action=='Theme':
-                    from sumtui.theme import available_theme_names
-                    from sumtui.dialogs import choose_list
-                    curses.def_prog_mode(); curses.endwin()
-                    try: result=choose_list(available_theme_names(),title='SES theme',theme=self.theme_name)
-                    finally: curses.reset_prog_mode(); self.win.clear(); self.win.refresh()
-                    if result.accepted: self.command('theme '+str(result.value))
-                elif action=='Recalculate': self.book.dirty=True; self.message='Recalculated'
-                elif action=='Go to cell': self.command('goto '+self.prompt('Cell: '))
-                elif action=='Command line': self.command(self.prompt(':'))
-                elif action=='Show formula': self.message=self.book.get(self.addr()).raw
-                elif action=='Keys': self.modal(HELP)
-                elif action=='Functions': self.modal(['SUM AVG COUNT SUMPRODUCT COUNTIF SUMIF COUNTIFS SUMIFS',
-                        'IF AND OR NOT ABS ROUND ROUNDUP ROUNDDOWN CEIL FLOOR',
-                        'VALUE CONCAT STRING LEFT RIGHT MID FIND LENGTH',
-                        'INDEX CHOOSE VLOOKUP HLOOKUP SQRT MOD UPPER LOWER'])
-                elif action=='About': self.modal(['SES 0.1.0a4 - alpha','GNU GPL-3.0-or-later'])
-                return
+            path=make_pdf(self.book); self._external(lambda:open_file(path)); return self.note(f"Preview: {path}");
+        except Exception as exc: return self.note(f"Preview error: {exc}");
+    def help(self): self._external(lambda:show_message("\n".join(HELP),title="SES keys",theme=self.theme_name)); return True;
+    def about(self): self._external(lambda:show_message(f"SES {__version__} - alpha\nGNU GPL-3.0-or-later",title="About SES",theme=self.theme_name)); return True;
     def run(self):
-        while self.running:
-            self.draw(); k=self.win.getch()
-            if k==curses.KEY_MOUSE: self.mouse()
-            elif self.navigation(k): pass
-            elif k==curses.KEY_F1: self.modal(HELP)
-            elif k==curses.KEY_F2: self.edit()
-            elif k==curses.KEY_F5: self.command('goto '+self.prompt('Cell: '))
-            elif k==curses.KEY_F6:
-                names=list(self.book.sheets); self.book.active=names[(names.index(self.book.active)+1)%len(names)]; self.book.dirty=True
-            elif k==curses.KEY_F9: self.book.dirty=True; self.message='Recalculated'
-            elif k in (curses.KEY_F10,27): self.show_menu()
-            elif k==26: self.command('undo')
-            elif k==25: self.command('redo')
-            elif k==2: self.command('bold')
-            elif k==21: self.command('underline')
-            elif k==3: self.command('copy')
-            elif k==24: self.command('cut')
-            elif k==22: self.command('paste')
-            elif k==ord(':'): self.command(self.prompt(':'))
-            elif k in (10,13): self.edit()
-            elif 32<=k<=126: self.edit(replace=True,initial=chr(k))
+        try: return self.app.run();
+        finally: self.persist();
+
 
 def argument_parser():
-    parser=argparse.ArgumentParser(prog='ses',description='SES - sumEditSpreadsheet');
-    parser.add_argument('file',nargs='?',help='existing .ses workbook to open');
-    parser.add_argument('--theme',help='sumTUI theme, e.g. DOS, ZX, XBASE, Light');
-    parser.add_argument('--list-themes',action='store_true',help='list available sumTUI themes');
-    parser.add_argument('--demo',action='store_true',help='open example sheet');
-    flags=parser.add_mutually_exclusive_group();
-    flags.add_argument('--grid',action='store_true',help='show DOS gridlines');
-    flags.add_argument('--no-grid',action='store_true',help='hide DOS gridlines');
-    parser.add_argument('--version',action='version',version='SES 0.1.0a4');
-    return parser;
+    parser=argparse.ArgumentParser(prog="ses",description="SES - sumEditSpreadsheet");
+    parser.add_argument("file",nargs="?",help="existing .ses workbook to open");
+    parser.add_argument("--theme",help="sumTUI theme"); parser.add_argument("--list-themes",action="store_true"); parser.add_argument("--demo",action="store_true");
+    parser.add_argument("--border",choices=border_names(),help="cell/grid border style"); parser.add_argument("--grid",action="store_true",help="alias for --border single"); parser.add_argument("--no-grid",action="store_true",help="alias for --border none");
+    parser.add_argument("--version",action="version",version=f"SES {__version__}"); return parser;
 
 
 def main(argv=None):
-    parser=argument_parser(); args=parser.parse_args(argv);
-    if args.list_themes:
-        from sumtui.theme import available_theme_names;
-        print('\n'.join(available_theme_names())); return 0;
-    if args.demo and args.file: parser.error('choose either FILE or --demo');
-    pref=load_preferences(); theme=args.theme or pref.get('theme','DOS');
-    try: theme_palette(theme);
-    except (ValueError,ImportError) as error: parser.error(str(error));
-    grid=True if args.grid else (False if args.no_grid else bool(pref.get('grid',False)));
-    if args.file:
-        try: book=Book.load(Path(args.file).expanduser());
-        except (OSError,ValueError,KeyError,TypeError,SheetError) as exc:
-            parser.exit(2,f'ses: cannot open {args.file}: {exc}\n');
-    else: book=sample_book() if args.demo else Book();
-    if not sys.stdin.isatty() or not sys.stdout.isatty():
-        parser.exit(2,'ses: interactive terminal required\n');
-    def run(win):
-        app=App(win,book=book,filename=args.file,theme=theme,grid=grid,preferences=pref);
-        try: app.run();
-        finally: app.persist();
-    curses.wrapper(run);
-    return 0
+    parser=argument_parser(); args=parser.parse_args(argv); refresh_user_themes();
+    if args.list_themes: print("\n".join(available_theme_names())); return 0;
+    if args.demo and args.file: parser.error("choose either FILE or --demo");
+    pref=load_preferences(); theme=args.theme or pref.get("theme","DOS");
+    if theme.casefold() not in [name.casefold() for name in available_theme_names(include_hidden=True)]: parser.error("Unknown theme: "+theme);
+    border=args.border or ("single" if args.grid else ("none" if args.no_grid else pref.get("border","none")));
+    try: book=Book.load(Path(args.file).expanduser()) if args.file else (sample_book() if args.demo else Book());
+    except Exception as exc: parser.exit(2,f"ses: cannot open {args.file}: {exc}\n");
+    if not sys.stdin.isatty() or not sys.stdout.isatty(): parser.exit(2,"ses: interactive terminal required\n");
+    return SESController(book=book,filename=args.file,theme=theme,border=border,preferences=pref).run();
 
-if __name__=='__main__': main()
+
+if __name__=="__main__": raise SystemExit(main());

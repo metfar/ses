@@ -1,14 +1,17 @@
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
 [project]
 name = "sum-ses"
-version = "0.1.0a5"
-description = "SES: terminal spreadsheet prototype for the sum ecosystem"
+version = "0.1.0a6"
+description = "SES: sumEditSpreadsheet for the sum ecosystem"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
-dependencies = ["sumtui>=0.8.0a30"]
+dependencies = ["sumtui>=0.8.0a30", "sumcore>=0.1.0a20"]
+
 [project.scripts]
 ses = "ses.tui:main"
+
 [tool.setuptools.packages.find]
 include = ["ses*"]

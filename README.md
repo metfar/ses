@@ -1,91 +1,77 @@
-# SES 0.1.0a4 — experimental terminal spreadsheet
+# SES 0.1.0a6 — sumEditSpreadsheet
 
-A first, **independent** implementation of SES, inspired by the keyboard-first text interface of Quattro Pro / Lotus 1-2-3. It does **not** alter sumcore or any existing sum packages. Python >= 3.10, curses (Linux) and sumTUI >= 0.8.0a30, which also supplies the shared dialogs and theme definitions.
+SES is the keyboard-first spreadsheet/table editor for the sum ecosystem. This revision moves the whole interactive shell to **sumTUI** instead of maintaining a parallel curses UI, so menus, mouse routing, dialogs, themes, status bars and focus behavior come from the same transversal layer used by the other sum applications.
 
-## Run
+## Main interaction
 
-```bash
-cd SES-0.1.0
-python3 -m ses
+- `F2` or click the formula bar: edit the current cell.
+- Typing while the grid has focus replaces the current cell and enters edit mode.
+- `Ctrl+Z` / `Ctrl+Y`: undo / redo.
+- `Ctrl+C` / `Ctrl+X` / `Ctrl+V`: copy / cut / paste.
+- `Ctrl+B` / `Ctrl+U`: bold / underline the current selection.
+- Click a row or column header to select it.
+- `Shift` extends row, column or cell selections; `Ctrl` adds a disjoint selection when the terminal reports mouse modifiers.
+- Relative, absolute and mixed references keep the existing SES calculation semantics (`A1`, `$A1`, `A$1`, `$A$1`).
+
+## sumTUI integration
+
+The top menu is now a real `sumTUI.MenuBar` inside `sumTUI.MenuDesktop`. Mouse clicks on the menu are therefore handled by sumTUI itself, including multi-level submenus. Open/Save/Save As, About, Help and theme selection also use sumTUI components and the active `sumtheme` roles.
+
+SES-specific rendering is limited to the spreadsheet grid and formula semantics. Theme colors are not reimplemented in SES. Explicit foreground/background colors stored in cells remain document formatting and intentionally override the application theme for those cells.
+
+## Borders and reusable tables
+
+`Style -> Borders` supports:
+
+- none
+- single
+- thick
+
+The border glyphs are validated against `sumcore.charset.ASC`, so the grid uses the same canonical extended charset as the rest of sum. The model stores the semantic border style, not border characters as cell contents. This is intended to become the shared table behavior that SEP can invoke for editing embedded document tables.
+
+Examples:
+
+```text
+┌────────────┬────────────┐
+│            │            │
+├────────────┼────────────┤
+│            │            │
+└────────────┴────────────┘
 ```
 
-To install as command: `python3 -m pip install --user .` (or in a virtual environment); then `ses`.
+and the thick variant:
 
-## Keys
+```text
+┏━━━━━━━━━━━━┳━━━━━━━━━━━━┓
+┃            ┃            ┃
+┣━━━━━━━━━━━━╋━━━━━━━━━━━━┫
+┃            ┃            ┃
+┗━━━━━━━━━━━━┻━━━━━━━━━━━━┛
+```
 
-| Key | Action |
-|---|---|
-| Arrow keys | Navigate |
-| Shift+arrows | Extend range (when terminal emits distinct shifted keys) |
-| F1 | Help |
-| F2, or click formula bar | Edit existing cell |
-| Printable key | Replace active cell and start typing |
-| Enter | Commit edit |
-| Tab while editing | Pick formula reference with sheet cursor; press Enter to insert |
-| Ctrl+B | Bold entire selection |
-| Ctrl+Z / Ctrl+Y | Undo / redo |
-| F5 | Go to cell |
-| F6 | Next sheet |
-| F9 | Recalculate |
-| F10 / Esc | Menus |
-| `:` | Command line |
+## Print preview
 
-### Commands
+`File -> Print preview` builds a PDF from the active sheet and opens it with the platform viewer (`xdg-open` on Linux, `open` on macOS, the native shell on Windows). The PDF path is temporary. Preview uses WeasyPrint when available, which is already part of the sumdoc stack; SES does not attempt to emulate a graphical page preview inside the terminal.
 
-`:save filename.ses`, `:open filename.ses`, `:sheet Pagos`, `:goto B20`, `:select A1:C12`, `:bold`, `:align center`, `:copy A1 C1`, `:undo`, `:redo`, `:quit`.
+Current preview includes cell values, basic alignment, bold/underline and table borders. Page setup, repeating headers, print areas and full SDSS styling remain later work.
 
-### Entering data
+## Demo and command line
 
-- Plain text or numbers, or formulas beginning `=`, `+`, `@` (e.g. `=SUM(A1:A3)`, `@SUM(A1:A3)`).
-- `'Text` left-aligned; `^Text` centered; `"Text` right-aligned; `\-` repeat dash to column width.
-- Cell addresses support `$A1`, `A$1`, `$A$1`; copy adjusts relative parts.
-- Cross-sheet: `=Sheet2!A1`.
-- `=SUMIF(A1:A5;"Ana";B1:B5)` and `=COUNTIF(A1:A5;">10")`.
-- Errors such as `#PARSE!`, `#NAME?`, `#REF!`, `#CYCLE!`, `#DIV/0!` appear in cells.
-- `ROUND` uses half-even; `ROUNDUP` away from zero, `ROUNDDOWN` towards zero; `CEIL` and `FLOOR` use +/- infinity (not synonyms for negative numbers).
+```bash
+ses --theme MC --demo
+ses --theme DOS --border thick workbook.ses
+ses workbook.ses
+ses --list-themes
+```
 
-## Important limitations
+`--grid` is retained as an alias for `--border single`, and `--no-grid` for `--border none`.
 
-This is an **alpha prototype**, not production-ready for financial/business records. Only the native JSON-based `.ses` workbook is supported; external workbooks, Excel/ODS, locale customization, remote sync, printing, charts, stylesheets, Python cells and full mobile support remain out of scope. Formula expressions and function coverage are intentionally limited. The formula editor uses Tab as a range-picking toggle; terminals differ in mouse and shifted-arrow support. Single workbook, single-process calculation, bounded recursive evaluation with circular reference detection and cached results; no parallel evaluation.
+Preferences are stored under `${XDG_CONFIG_HOME:-~/.config}/sumtui/ses.json` and currently include theme, border style and the last directory.
 
-Input is parsed without `eval()`. The `.ses` JSON document is not an encrypted or authenticated format. Keep backups of important documents.
+## Formula coverage
 
-## SES 0.1.0a2 additions
+The current engine includes arithmetic, ranges, cross-sheet references, circular-reference detection, copying/filling of relative formulas, and functions including `SUM`, `AVG`, `COUNT`, `SUMPRODUCT`, `COUNTIF`, `COUNTIFS`, `SUMIF`, `SUMIFS`, `IF`, `AND`, `OR`, `NOT`, `ROUND`, `ROUNDUP`, `ROUNDDOWN`, `CEIL`, `FLOOR`, `VALUE`, `STRING`, `CONCAT`, `LEFT`, `RIGHT`, `MID`, `FIND`, `LENGTH`, `INDEX`, `CHOOSE`, `VLOOKUP` and `HLOOKUP`.
 
-This development revision adds a visible text cursor in the formula bar while editing,
-underline (`Ctrl+U`), foreground/background colors 0–7, optional DOS box-drawing
-full grid, internal copy/cut/paste (`Ctrl+C`, `Ctrl+X`, `Ctrl+V`), fill down/right,
-and insert row/column. Mouse-click column and row headings select full columns
-and rows. Holding Shift while clicking extends a selection; Ctrl-click adds a
-separate selected area **when the terminal reports those modifiers**. Affected
-edits are recorded as single undo/redo operations. Cell formats survive save/load.
-
-The Style menu toggles grid display. With the grid on, separators use an extra
-terminal row between sheet rows; the grid never becomes part of cell content.
-
-Examples of command-mode alternatives: `:copy A1:B3 D7`, `:cut A1:B3 D7`,
-`:fill down B1:B20`, `:fill right A3:E3`, `:row 4`, `:col C`, `:fg 3`,
-`:bg 1`, `:underline`, `:grid`.
-
-**Alpha limitations:** Only internal clipboard; system clipboard and multi-area
-copy/paste are not yet supported. Full-column formatting is capped at 50,000
-cells per command. Row/column insertion adjusts local and unquoted `Sheet!A1`
-references in the currently loaded workbook, but does not yet handle quoted
-sheet names, external files, named ranges, or every possible formula grammar.
-Cut/paste moves the source formula without retargeting all dependent formulas.
-Use backups for actual business records. Shift/Ctrl mouse selection depends on
-terminal modifier reporting; it may not be reliable in all terminals.
-
-## SES 0.1.0a4 — CLI, file dialogs and preferences (regression fix)
-
-- `ses --theme DOS --demo` restores the demo and theme options.
-- `ses /path/to/mybook.ses` opens a native workbook before the TUI starts.
-- `ses --grid`, `ses --no-grid`, `ses --list-themes` and `ses --help`.
-- `File -> Open` delegates to the existing **sumTUI FileDialog**; `File -> Save as` uses the existing **sumTUI read_entry**, with a prefilled filename and overwrite confirmation. `File -> Save` reuses the loaded filename, or enters Save as if none.
-- `Style -> Theme` chooses an existing sumTUI theme. SES does not alter the transversal theme manager. Terminal rendering maps sumTUI RGB roles to available curses colors; true-color fidelity is not guaranteed.
-- User preferences are stored in `${XDG_CONFIG_HOME:-~/.config}/sum/ses.json`: theme, grid enabled and last used directory. Explicit command-line options override saved preferences, and changes made in SES persist. Document data remains inside the workbook.
-- `--demo` and positional filename are mutually exclusive. A nonexistent/invalid filename produces an error rather than silently starting an empty sheet.
-
-**Integration caveat:** SES still uses curses for its sheet and sumTUI's Rich-backed event loop for file dialogs. It suspends curses during a dialog. This transition should be tested in the user's actual terminal; long term the sheet should migrate to a shared sumTUI application/event loop.
+SES remains alpha software. Keep backups of real business workbooks while the file format and editing semantics are still evolving.
 
 <p align=center><b>- oOo -</b></p>
