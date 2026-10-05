@@ -1,4 +1,4 @@
-# SES 0.1.0a9 — sumEditSpreadsheet
+# SES 0.1.0a10 — sumEditSpreadsheet
 
 SES is the keyboard-first spreadsheet/table editor for the sum ecosystem. This revision moves the whole interactive shell to **sumTUI** instead of maintaining a parallel curses UI, so menus, mouse routing, dialogs, themes, status bars and focus behavior come from the same transversal layer used by the other sum applications.
 
@@ -89,7 +89,7 @@ The current engine includes arithmetic, ranges, cross-sheet references, circular
 SES remains alpha software. Keep backups of real business workbooks while the file format and editing semantics are still evolving.
 
 
-## SES 0.1.0a9
+## SES 0.1.0a10
 
 - PDF/PNG preview uses the same value-to-text conversion as the TUI: plain numeric values do not gain `.0` unless a `PICTURE` requests decimals.
 - Printable columns are proportionally fitted to A4 landscape width so wide sheets are not clipped; additional rows paginate naturally.
@@ -97,5 +97,18 @@ SES remains alpha software. Keep backups of real business workbooks while the fi
 - File → Preview PDF and File → Preview PNG share the same print renderer.
 - Save As appends `.ses` automatically when the user supplies no extension.
 - Explicit color state is persisted separately from default TUI colors, so printable pages stay white unless a cell was actually colored.
+
+## Formula language
+
+A workbook stores an independent formula language. The first lexicons are English (`en`), Spanish (`es`), French (`fr`) and Portuguese (`pt`). Canonical English names remain valid, while localized names resolve to the same internal function identifier.
+
+```text
+=IF(A1>0;SUM(A1:A9);0)
+=SI(A1>0;SUMA(A1:A9);0)
+=SI(A1>0;SOMME(A1:A9);0)
+=SE(A1>0;SOMA(A1:A9);0)
+```
+
+Use `ses --formula-language es FILE` for an explicit override. `Help -> Functions A-Z` is generated alphabetically from the common lexicon and every entry includes an example. About remains application metadata, outside the function-help corpus.
 
 <p align=center><b>- oOo -</b></p>

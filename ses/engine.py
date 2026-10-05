@@ -7,9 +7,12 @@ import re
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_EVEN, ROUND_UP, ROUND_DOWN
 from pathlib import Path
+from sumcore.lexicon import resolve as resolve_lexeme, SUPPORTED_LANGUAGES
+from sumcore.text import repeat as core_repeat, trim as core_trim, ltrim as core_ltrim, rtrim as core_rtrim, alltrim as core_alltrim, like as core_like, ilike as core_ilike
+from sumcore.formatting import numformat as core_numformat, dateformat as core_dateformat, textformat as core_textformat, boolformat as core_boolformat
 
 CELL = re.compile(r'(?i)^(\$?)([A-Z]+)(\$?)([1-9][0-9]*)$')
-TOKEN = re.compile(r'''\s*(?:(?P<string>"(?:[^"]|"")*")|(?P<number>\d+(?:_\d+)*(?:\.\d+(?:_\d+)*)?(?:[eE][+-]?\d+)?)|(?P<word>\$?[A-Za-z_][A-Za-z0-9_.$]*\$?[0-9]*|\$[A-Za-z]+\$?[0-9]+)|(?P<op><=|>=|<>|!=|[+*/^&=<>(),;:!%-]))''')
+TOKEN = re.compile(r'''\s*(?:(?P<string>"(?:[^"]|"")*")|(?P<number>\d+(?:_\d+)*(?:\.\d+(?:_\d+)*)?(?:[eE][+-]?\d+)?)|(?P<word>\$?(?:[^\W\d]|_)[\w.$]*\$?[0-9]*|\$[A-Za-z]+\$?[0-9]+)|(?P<op><=|>=|<>|!=|[+*/^&=<>(),;:!%-]))''',re.UNICODE)
 
 class SheetError(Exception):
     def __init__(self, code, detail=''):
@@ -71,7 +74,8 @@ def tokenize(expr):
 
 
 class Parser:
-    def __init__(self, s): self.t=tokenize(s); self.i=0
+    def __init__(self,s,language="en"):
+        self.t=tokenize(s); self.i=0; self.language=language if language in SUPPORTED_LANGUAGES else "en"
     def see(self): return self.t[self.i][1]
     def take(self, value=None):
         typ, val = self.t[self.i]
@@ -99,9 +103,9 @@ class Parser:
                         args.append(self.expr())
                         if self.see() not in (',',';'): break
                         self.take()
-                self.take(')'); node=('call',val.upper().lstrip('@'),args)
+                self.take(')'); canonical=resolve_lexeme(val.upper().lstrip('@'),self.language,'function') or val.upper().lstrip('@'); node=('call',canonical,args)
             elif CELL.fullmatch(val): node=('ref',None,val)
-            elif val.upper() in ('TRUE','FALSE'): node=('literal',val.upper()=='TRUE')
+            elif (constant:=resolve_lexeme(val,self.language,'constant')) in ('TRUE','FALSE','UNKNOWN'): node=('literal',True if constant=='TRUE' else False if constant=='FALSE' else None)
             else: raise SheetError('#NAME?',f'Unknown name {val}')
         else: raise SheetError('#PARSE!', f'Unexpected {val}')
         precedence={'=':10,'<>':10,'!=':10,'>':10,'<':10,'>=':10,'<=':10,'&':15,'+':20,'-':20,'*':30,'/':30,'%':30,'^':40,':':50}
@@ -194,6 +198,16 @@ def function(name, args):
     if name=='VALUE': return number(a[0])
     if name in ('STRING','STR'): return str(a[0] if a[0] is not None else '')
     if name in ('CONCAT','CONCATENATE'): return ''.join(str(v if v is not None else '') for v in flatten(a))
+    if name=='REPEAT': return core_repeat(str(a[0]),int(number(a[1])))
+    if name=='LTRIM': return core_ltrim(a[0],a[1] if len(a)>1 else None)
+    if name=='RTRIM': return core_rtrim(a[0],a[1] if len(a)>1 else None)
+    if name in ('TRIM','ALLTRIM'): return core_alltrim(a[0],a[1] if len(a)>1 else None)
+    if name=='LIKE': return core_like(a[0],a[1])
+    if name=='ILIKE': return core_ilike(a[0],a[1])
+    if name=='NUMFORMAT': return core_numformat(a[0],a[1] if len(a)>1 else 'general')
+    if name=='DATEFORMAT': return core_dateformat(a[0],a[1] if len(a)>1 else 'date.iso')
+    if name=='TEXTFORMAT': return core_textformat(a[0],a[1] if len(a)>1 else 'text')
+    if name=='BOOLFORMAT': return core_boolformat(a[0],a[1] if len(a)>1 else 'FALSE|TRUE|UNKNOWN')
     if name=='LEFT': return str(a[0])[:max(0,int(number(a[1])))]
     if name=='RIGHT':
         count=max(0,int(number(a[1]))); return str(a[0])[-count:] if count else ''
@@ -306,7 +320,8 @@ class Sheet:
 
 
 class Book:
-    def __init__(self):
+    def __init__(self,formula_language="en"):
+        self.formula_language=formula_language if formula_language in SUPPORTED_LANGUAGES else "en";
         self.sheets={'Sheet1':Sheet()}
         self.active='Sheet1'
         self.history=[]; self.future=[]
@@ -523,7 +538,7 @@ class Book:
             expr=raw[1:]
             if raw.startswith('@'): expr=raw[1:]
             try:
-                result=self._node(Parser(expr).parse(),path|{key},sheet)
+                result=self._node(Parser(expr,self.formula_language).parse(),path|{key},sheet)
             except SheetError as e: result=e.code
             except (ValueError,IndexError,OverflowError,TypeError,ZeroDivisionError) as e:
                 result='#DIV/0!' if isinstance(e,ZeroDivisionError) else '#VALUE!'
@@ -577,14 +592,14 @@ class Book:
             return function(name,[self._node(a,path,sheet) for a in args])
         raise SheetError('#PARSE!')
     def save(self,path):
-        obj={'format':'ses-0.1','active':self.active,'sheets':{
+        obj={'format':'ses-0.1','active':self.active,'formula_language':self.formula_language,'sheets':{
             name:{'cells':{k:vars(v) for k,v in sh.cells.items()},'column_widths':sh.column_widths,'row_heights':sh.row_heights} for name,sh in self.sheets.items()}}
         Path(path).write_text(json.dumps(obj,ensure_ascii=False,indent=2),encoding='utf-8')
     @classmethod
     def load(cls,path):
         obj=json.loads(Path(path).read_text(encoding='utf-8'))
         if obj.get('format')!='ses-0.1': raise SheetError('#FILE!','Not a SES 0.1 document')
-        b=cls(); b.sheets={}
+        b=cls(obj.get('formula_language','en')); b.sheets={}
         for name,data in obj['sheets'].items():
             # Backward compatible with a1-a7 files where the sheet value was directly the cells mapping.
             if 'cells' in data and isinstance(data.get('cells'),dict):

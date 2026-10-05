@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sum-ses"
-version = "0.1.0a9"
+version = "0.1.0a10"
 description = "SES: sumEditSpreadsheet for the sum ecosystem"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
-dependencies = ["sumtui>=0.8.0a30", "sumcore>=0.1.0a20"]
+dependencies = ["sumtui>=0.8.0a31", "sumcore>=0.1.0a21"]
 
 [project.scripts]
 ses = "ses.tui:main"

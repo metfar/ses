@@ -7,9 +7,9 @@ from ses.version import __version__;
 
 
 def test_version_is_single_source():
-    assert __version__ == "0.1.0a9";
+    assert __version__ == "0.1.0a10";
     text=(Path(__file__).resolve().parents[1]/"README.md").read_text(encoding="utf-8");
-    assert "SES 0.1.0a9" in text;
+    assert "SES 0.1.0a10" in text;
     assert text.rstrip().endswith('<p align=center><b>- oOo -</b></p>');
 
 

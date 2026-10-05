@@ -36,7 +36,7 @@ def test_about_uses_current_version():
     controller._external=lambda cb: cb();
     with patch("ses.tui.show_message") as dialog:
         controller.about();
-    assert "0.1.0a9" in dialog.call_args.args[0];
+    assert "0.1.0a10" in dialog.call_args.args[0];
 
 
 def test_preview_editing_aids_default_off_but_explicit_borders_remain():

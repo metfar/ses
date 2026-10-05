@@ -42,6 +42,7 @@ from .borders import border_names, glyphs;
 from .engine import Book, Cell, SheetError, cellref, colname, transform_formula, display_value;
 from .preview import make_pdf, make_png, open_file;
 from .version import __version__;
+from sumcore.lexicon import SUPPORTED_LANGUAGES, help_topics, display_name;
 
 
 HELP = [
@@ -72,7 +73,7 @@ def load_preferences(path=None):
     try:
         data=json.loads(target.read_text(encoding="utf-8"));
         if not isinstance(data,dict): return {};
-        return {k:data[k] for k in ("theme","border","last_dir","show_gridlines","show_column_headers","show_row_headers","preview_gridlines","preview_column_headers","preview_row_headers") if k in data};
+        return {k:data[k] for k in ("theme","border","last_dir","formula_language","show_gridlines","show_column_headers","show_row_headers","preview_gridlines","preview_column_headers","preview_row_headers") if k in data};
     except (FileNotFoundError,ValueError,OSError): return {};
 
 
@@ -334,19 +335,19 @@ class SESController:
             Menu("Edit",[MenuItem("Undo",self.undo,"Ctrl+Z"),MenuItem("Redo",self.redo,"Ctrl+Y"),Separator(),MenuItem("Copy",self.copy,"Ctrl+C"),MenuItem("Cut",self.cut,"Ctrl+X"),MenuItem("Paste",self.paste,"Ctrl+V"),Separator(),MenuItem("Fill down",lambda:self.fill("down")),MenuItem("Fill right",lambda:self.fill("right")),Separator(),MenuItem("Insert row",self.insert_row),MenuItem("Insert column",self.insert_col)]),
             style_menu,view_menu,
             Menu("Data",[MenuItem("Recalculate",self.recalculate,"F9"),MenuItem("Go to cell",self.goto,"F5")]),
-            Menu("Tools",[MenuItem("Theme",self.choose_theme)]),
-            Menu("Help",[MenuItem("Keys",self.help),MenuItem("About",self.about)]),
+            Menu("Tools",[MenuItem("Theme",self.choose_theme),MenuItem("Formula language",submenu=Menu("Formula language",[MenuItem(lang.upper(),lambda l=lang:self.set_formula_language(l),radio=lambda l=lang:self.book.formula_language==l) for lang in SUPPORTED_LANGUAGES]))]),
+            Menu("Help",[MenuItem("Functions A-Z",self.function_help),MenuItem("Keys",self.help),Separator(),MenuItem("About",self.about)]),
         ],on_close=lambda:self.app.focus.set(self.grid));
     def _install_bindings(self):
         bindings={"f1":self.help,"f2":lambda:self.start_edit(False),"f5":self.goto,"f6":self.next_sheet,"f9":self.recalculate,"f10":self.open_menu,
-                  "ctrl+z":self.undo,"ctrl+y":self.redo,"ctrl+c":self.copy,"ctrl+x":self.cut,"ctrl+v":self.paste,"ctrl+b":self.toggle_bold,"ctrl+u":self.toggle_underline,"ctrl+s":self.save,"escape":self.cancel_edit};
+                  "ctrl+1":self.set_picture,"ctrl+z":self.undo,"ctrl+y":self.redo,"ctrl+c":self.copy,"ctrl+x":self.cut,"ctrl+v":self.paste,"ctrl+b":self.toggle_bold,"ctrl+u":self.toggle_underline,"ctrl+s":self.save,"escape":self.cancel_edit};
         for key,callback in bindings.items(): self.app.bind(key,callback);
     def open_menu(self): self.menu.open(); self.app.focus.set(self.menu); self.app.invalidate(); return True;
     def _external(self,callback): return self.app.run_external(callback);
     def persist(self):
-        try: save_preferences({"theme":self.theme_name,"border":self.border,"show_gridlines":self.show_gridlines,"show_column_headers":self.show_column_headers,"show_row_headers":self.show_row_headers,"preview_gridlines":self.preview_gridlines,"preview_column_headers":self.preview_column_headers,"preview_row_headers":self.preview_row_headers,"last_dir":str(Path(self.file).expanduser().resolve().parent) if self.file else self.preferences.get("last_dir",str(Path.cwd()))});
+        try: save_preferences({"theme":self.theme_name,"border":self.border,"formula_language":self.book.formula_language,"show_gridlines":self.show_gridlines,"show_column_headers":self.show_column_headers,"show_row_headers":self.show_row_headers,"preview_gridlines":self.preview_gridlines,"preview_column_headers":self.preview_column_headers,"preview_row_headers":self.preview_row_headers,"last_dir":str(Path(self.file).expanduser().resolve().parent) if self.file else self.preferences.get("last_dir",str(Path.cwd()))});
         except OSError as exc: self.note(f"Preferences not saved: {exc}");
-    def new(self): self.book=Book(); self.file=None; self.selection_changed(); self.note("New workbook"); return True;
+    def new(self): self.book=Book(self.preferences.get("formula_language","en")); self.file=None; self.selection_changed(); self.note("New workbook"); return True;
     def open_dialog(self):
         start=self.preferences.get("last_dir",str(Path.cwd())); result=self._external(lambda:choose_file(path=start,title="Open SES",theme=self.theme_name));
         if not result.accepted: return True;
@@ -465,6 +466,17 @@ class SESController:
         return True;
     def next_sheet(self):
         names=list(self.book.sheets); self.book.active=names[(names.index(self.book.active)+1)%len(names)]; self.book.dirty=True; self.selection_changed(); return True;
+    def set_formula_language(self,language):
+        if language not in SUPPORTED_LANGUAGES: return self.note("Unknown formula language");
+        self.book.formula_language=language; self.book.dirty=True; self.persist();
+        return self.note("Formula language: "+language.upper());
+    def function_help(self):
+        topics=help_topics(self.book.formula_language,"function");
+        lines=[];
+        for topic in topics:
+            lines.append(topic["name"]+" — "+topic["summary"]);
+            lines.append("  Example: "+topic["example"]);
+        self._external(lambda:show_message("\n".join(lines),title="SES functions A-Z",theme=self.theme_name)); return True;
     def choose_theme(self):
         result=self._external(lambda:choose_list(available_theme_names(),title="SES theme",theme=self.theme_name));
         if result.accepted:
@@ -489,7 +501,7 @@ class SESController:
 def argument_parser():
     parser=argparse.ArgumentParser(prog="ses",description="SES - sumEditSpreadsheet");
     parser.add_argument("file",nargs="?",help="existing .ses workbook to open");
-    parser.add_argument("--theme",help="sumTUI theme"); parser.add_argument("--list-themes",action="store_true"); parser.add_argument("--demo",action="store_true");
+    parser.add_argument("--theme",help="sumTUI theme"); parser.add_argument("--formula-language",choices=SUPPORTED_LANGUAGES,help="formula language: en/es/fr/pt"); parser.add_argument("--list-themes",action="store_true"); parser.add_argument("--demo",action="store_true");
     parser.add_argument("--border",choices=border_names(),help="cell/grid border style"); parser.add_argument("--grid",action="store_true",help="alias for --border single"); parser.add_argument("--no-grid",action="store_true",help="alias for --border none");
     parser.add_argument("--version",action="version",version=f"SES {__version__}"); return parser;
 
@@ -502,7 +514,9 @@ def main(argv=None):
     if theme.casefold() not in [name.casefold() for name in available_theme_names(include_hidden=True)]: parser.error("Unknown theme: "+theme);
     border=args.border or ("single" if args.grid else ("none" if args.no_grid else pref.get("border","single")));
     show_gridlines=True if (args.grid or (args.border and args.border!="none")) else (False if (args.no_grid or args.border=="none") else pref.get("show_gridlines",False));
-    try: book=Book.load(Path(args.file).expanduser()) if args.file else (sample_book() if args.demo else Book());
+    try:
+        book=Book.load(Path(args.file).expanduser()) if args.file else (sample_book() if args.demo else Book(args.formula_language or pref.get("formula_language","en")));
+        if args.formula_language: book.formula_language=args.formula_language;
     except Exception as exc: parser.exit(2,f"ses: cannot open {args.file}: {exc}\n");
     if not sys.stdin.isatty() or not sys.stdout.isatty(): parser.exit(2,"ses: interactive terminal required\n");
     return SESController(book=book,filename=args.file,theme=theme,border=border,preferences=pref,show_gridlines=show_gridlines).run();
