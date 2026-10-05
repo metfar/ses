@@ -16,7 +16,7 @@ MENUS={
  'Tools':['Command line','Show formula'],
  'Help':['Keys','Functions','About']}
 HELP=[
- 'SES 0.1.0a4 - terminal spreadsheet',
+ 'SES 0.1.0a5 - terminal spreadsheet',
  'F2 or click formula bar: edit; typing replaces; Tab in edit: pick range',
  'Ctrl+C copy  Ctrl+X cut  Ctrl+V paste  Ctrl+B bold  Ctrl+U underline',
  'Ctrl+Z undo  Ctrl+Y redo  F1 help  F5 goto  F6 next sheet',
@@ -95,7 +95,11 @@ def sample_book():
 
 
 def theme_palette(name):
-    from sumtui.theme import make_theme, available_theme_names;
+    # User themes must be registered before resolving the name.  sumedit and
+    # themeedit do the same; otherwise make_theme() silently falls back to ZX
+    # for an unknown custom theme name.
+    from sumtui.theme import make_theme, available_theme_names, refresh_user_themes;
+    refresh_user_themes();
     names=available_theme_names(include_hidden=True);
     aliases={'spectrum':'ZX','pc':'DOS','turbo':'DOS','commodore':'C64','sumx':'XBASE'};
     resolved=aliases.get(name.lower(),name);

@@ -101,3 +101,21 @@ class DemoAndThemeRegressionTests(unittest.TestCase):
         self.assertEqual([item[0] for item in seen],[
             'STYLE:menu_bar','STYLE:input','STYLE:table_header','STYLE:viewer',
             'STYLE:status','STYLE:selection','STYLE:border','STYLE:input_focus'])
+
+def test_theme_palette_refreshes_user_themes(monkeypatch):
+    import ses.tui as tui
+    calls=[]
+    class FakeTheme:
+        name='MC'
+    monkeypatch.setattr('sumtui.theme.refresh_user_themes', lambda: calls.append('refresh'))
+    monkeypatch.setattr('sumtui.theme.available_theme_names', lambda include_hidden=False: ('DOS','MC'))
+    monkeypatch.setattr('sumtui.theme.make_theme', lambda name: FakeTheme() if str(name).casefold()=='mc' else None)
+    result=tui.theme_palette('MC')
+    assert calls == ['refresh']
+    assert result.name == 'MC'
+
+
+def test_readme_has_standard_markdown_closure():
+    from pathlib import Path
+    text=(Path(__file__).resolve().parents[1]/'README.md').read_text(encoding='utf-8').rstrip()
+    assert text.endswith('<p align=center><b>- oOo -</b></p>')

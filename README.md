@@ -89,5 +89,3 @@ terminal modifier reporting; it may not be reliable in all terminals.
 **Integration caveat:** SES still uses curses for its sheet and sumTUI's Rich-backed event loop for file dialogs. It suspends curses during a dialog. This transition should be tested in the user's actual terminal; long term the sheet should migrate to a shared sumTUI application/event loop.
 
 <p align=center><b>- oOo -</b></p>
-
-
