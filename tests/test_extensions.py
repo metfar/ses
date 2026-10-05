@@ -36,4 +36,42 @@ def test_about_uses_current_version():
     controller._external=lambda cb: cb();
     with patch("ses.tui.show_message") as dialog:
         controller.about();
-    assert "0.1.0a6" in dialog.call_args.args[0];
+    assert "0.1.0a7" in dialog.call_args.args[0];
+
+
+def test_preview_editing_aids_default_off_but_explicit_borders_remain():
+    b=Book(); b.put("A1","'Name"); b.put("B1","'Value"); b.put("A2","'Tea"); b.put("B2","120");
+    b.border(["A1","B1","A2","B2"],"single",outline=False);
+    text=workbook_html(b);
+    assert "<thead>" not in text;
+    assert "<th>1</th>" not in text;
+    assert "border:1px solid #bbb" not in text;
+    assert "border-top:1px solid #555" in text;
+
+
+def test_preview_headers_and_gridlines_are_independent_options():
+    b=Book(); b.put("A1","1");
+    text=workbook_html(b,gridlines=True,column_headers=True,row_headers=True);
+    assert "<thead>" in text;
+    assert "<th>A</th>" in text;
+    assert "<th>1</th>" in text;
+    assert "border:1px solid #bbb" in text;
+
+
+def test_cell_border_is_undoable_and_persistent(tmp_path):
+    b=Book(); b.put("A1","1"); b.put("B1","2");
+    b.border(["A1","B1"],"thick",outline=True);
+    assert b.get("A1").border_left=="thick";
+    assert b.get("B1").border_right=="thick";
+    path=tmp_path/"borders.ses"; b.save(path); loaded=Book.load(path);
+    assert loaded.get("A1").border_left=="thick";
+    loaded.undo();  # load has no history; border remains
+    assert loaded.get("B1").border_right=="thick";
+
+
+def test_controller_preview_defaults_are_off():
+    with patch.object(SESController,"persist",lambda self:None):
+        controller=SESController(theme="DOS");
+    assert controller.preview_gridlines is False;
+    assert controller.preview_column_headers is False;
+    assert controller.preview_row_headers is False;

@@ -51,7 +51,8 @@ HELP = [
     "Ctrl+B bold   Ctrl+U underline   F5 goto   F6 next sheet",
     "Shift+arrows extends selection",
     "Click row/column header selects it; Shift extends; Ctrl adds disjoint selection",
-    "Style > Borders selects none/single/thick/double SUM-charset grids",
+    "View controls editing grid lines and row/column headings independently",
+    "Style > Cell borders marks real document/table borders for preview/print",
     "File > Print preview builds the real PDF and opens it with the platform viewer",
 ];
 
@@ -66,7 +67,7 @@ def load_preferences(path=None):
     try:
         data=json.loads(target.read_text(encoding="utf-8"));
         if not isinstance(data,dict): return {};
-        return {k:data[k] for k in ("theme","border","last_dir") if k in data};
+        return {k:data[k] for k in ("theme","border","last_dir","show_gridlines","show_column_headers","show_row_headers","preview_gridlines","preview_column_headers","preview_row_headers") if k in data};
     except (FileNotFoundError,ValueError,OSError): return {};
 
 
@@ -96,6 +97,9 @@ def sample_book():
     book.style(["F6","F7","F8","F9","J6","J7","J8","J9"],"bold",True);
     book.style(["J6"],"bg",2); book.style(["J7"],"bg",3); book.style(["J8"],"bg",6); book.style(["J9"],"bg",4);
     book.style(["K2","K3"],"fg",4); book.style(["K4"],"fg",2); book.style(["K2","K3","K4"],"bold",True);
+    book.border([f"{colname(c)}{r}" for r in range(1,5) for c in range(1,5)],"single",outline=False);
+    book.border([f"{colname(c)}{r}" for r in range(1,5) for c in range(6,12)],"single",outline=False);
+    book.border([f"{colname(c)}{r}" for r in range(6,10) for c in range(6,11)],"single",outline=True);
     return book;
 
 
@@ -111,10 +115,11 @@ class SpreadsheetGrid(Widget):
     COLW=12; ROWW=5;
     def __init__(self,host):
         super().__init__(); self.host=host; self.view_cols=1; self.view_rows=1;
-    def _pitch(self): return 2 if self.host.border!="none" else 1;
+    def _pitch(self): return 2 if self.host.show_gridlines else 1;
     def _adjust(self):
         h=self.layout_height or 20; w=self.layout_width or 80; pitch=self._pitch();
-        self.view_cols=max(1,(w-self.ROWW)//self.COLW); self.view_rows=max(1,(h-1)//pitch);
+        roww=self.ROWW if self.host.show_row_headers else 0; head=1 if self.host.show_column_headers else 0;
+        self.view_cols=max(1,(w-roww)//self.COLW); self.view_rows=max(1,(h-head)//pitch);
         if self.host.cx<self.host.scrollx: self.host.scrollx=self.host.cx;
         if self.host.cx>=self.host.scrollx+self.view_cols: self.host.scrollx=self.host.cx-self.view_cols+1;
         if self.host.cy<self.host.scrolly: self.host.scrolly=self.host.cy;
@@ -143,13 +148,14 @@ class SpreadsheetGrid(Widget):
             if event.action!="press" or event.button!="left": return False;
             if self._focus_manager is not None: self._focus_manager.set(self);
             self._adjust(); pitch=self._pitch();
-            if event.y==0 and event.x>=self.ROWW:
-                col=self.host.scrollx+(event.x-self.ROWW)//self.COLW; self.host.select_header("col",col,event.shift,event.ctrl); return True;
-            data_y=event.y-1;
+            roww=self.ROWW if self.host.show_row_headers else 0; head=1 if self.host.show_column_headers else 0;
+            if self.host.show_column_headers and event.y==0 and event.x>=roww:
+                col=self.host.scrollx+(event.x-roww)//self.COLW; self.host.select_header("col",col,event.shift,event.ctrl); return True;
+            data_y=event.y-head;
             if data_y<0 or data_y%pitch!=0: return True;
             row=self.host.scrolly+data_y//pitch;
-            if event.x<self.ROWW: self.host.select_header("row",row,event.shift,event.ctrl); return True;
-            col=self.host.scrollx+(event.x-self.ROWW)//self.COLW; self.host.select_cell(col,row,event.shift,event.ctrl);
+            if self.host.show_row_headers and event.x<roww: self.host.select_header("row",row,event.shift,event.ctrl); return True;
+            col=self.host.scrollx+(event.x-roww)//self.COLW; self.host.select_cell(col,row,event.shift,event.ctrl);
             if event.action=="press" and getattr(event,"double",False): self.host.start_edit(False);
             return True;
         if not isinstance(event,KeyEvent): return False;
@@ -165,14 +171,16 @@ class SpreadsheetGrid(Widget):
         return False;
     def __rich_console__(self,console,options):
         self.set_bounds(self.x,self.y,options.max_width,options.height or options.max_height or console.height); self._adjust();
-        lines=[]; header=Text(" "*self.ROWW,style=self.theme.style("table_header"));
-        for col in range(self.host.scrollx,self.host.scrollx+self.view_cols):
-            header.append(f"{colname(col):^{self.COLW}}",style=self.theme.style("table_header"));
-        lines.append(header);
-        border=glyphs(self.host.border);
+        lines=[]; roww=self.ROWW if self.host.show_row_headers else 0;
+        if self.host.show_column_headers:
+            header=Text(" "*roww,style=self.theme.style("table_header"));
+            for col in range(self.host.scrollx,self.host.scrollx+self.view_cols):
+                header.append(f"{colname(col):^{self.COLW}}",style=self.theme.style("table_header"));
+            lines.append(header);
+        border=glyphs(self.host.border if self.host.border!="none" else "single") if self.host.show_gridlines else None;
         if border: lines.append(Text(self._border_line(border.l,border.x,border.r,border.h),style=self.theme.style("border")));
         for ri in range(self.view_rows):
-            row=self.host.scrolly+ri; line=Text(f"{row:>{self.ROWW-1}} ",style=self.theme.style("table_header"));
+            row=self.host.scrolly+ri; line=Text(f"{row:>{self.ROWW-1}} " if self.host.show_row_headers else "",style=self.theme.style("table_header"));
             for col in range(self.host.scrollx,self.host.scrollx+self.view_cols):
                 address=f"{colname(col)}{row}"; cell=self.host.book.get(address); selected=self.host.contains(col,row); current=(col,row)==(self.host.cx,self.host.cy);
                 line.append(self._formatted(address),style=self._cell_style(cell,selected,current));
@@ -183,9 +191,15 @@ class SpreadsheetGrid(Widget):
 
 
 class SESController:
-    def __init__(self,book=None,filename=None,theme="DOS",border="none",preferences=None):
+    def __init__(self,book=None,filename=None,theme="DOS",border="single",preferences=None,show_gridlines=None,show_column_headers=None,show_row_headers=None):
         refresh_user_themes(); self.book=book or Book(); self.file=str(filename) if filename else None; self.preferences=preferences or {};
-        self.cx=1; self.cy=1; self.scrollx=1; self.scrolly=1; self.anchor=None; self.extra=[]; self.mode="cell"; self.border=border;
+        self.cx=1; self.cy=1; self.scrollx=1; self.scrolly=1; self.anchor=None; self.extra=[]; self.mode="cell"; self.border=("single" if border=="none" else border);
+        legacy_grid=(border!="none"); self.show_gridlines=self.preferences.get("show_gridlines",legacy_grid) if show_gridlines is None else bool(show_gridlines);
+        self.show_column_headers=self.preferences.get("show_column_headers",True) if show_column_headers is None else bool(show_column_headers);
+        self.show_row_headers=self.preferences.get("show_row_headers",True) if show_row_headers is None else bool(show_row_headers);
+        self.preview_gridlines=bool(self.preferences.get("preview_gridlines",False));
+        self.preview_column_headers=bool(self.preferences.get("preview_column_headers",False));
+        self.preview_row_headers=bool(self.preferences.get("preview_row_headers",False));
         self.clipboard=None; self.message="READY"; self.theme_name=theme;
         self.app=Application("SES",theme=theme,capture_control_keys=True,mouse=True);
         self.formula=TextInput("",on_submit=self._formula_submit); self.formula_label=FormulaLabel(self); self.grid=SpreadsheetGrid(self); self.status=StatusBar();
@@ -246,17 +260,35 @@ class SESController:
     def _menu(self):
         colors=["Black","Red","Green","Yellow","Blue","Magenta","Cyan","White"];
         def color_menu(attr): return Menu(attr.title(),[MenuItem(name,lambda n=i,a=attr:self.set_color(a,n)) for i,name in enumerate(colors)]);
-        border_menu=Menu("Borders",[MenuItem(name.title(),lambda n=name:self.set_border(n),radio=lambda n=name:self.border==n) for name in border_names()]);
+        grid_style=Menu("Grid style",[MenuItem(name.title(),lambda n=name:self.set_border(n),radio=lambda n=name:self.border==n) for name in ("single","thick")]);
+        cell_borders=Menu("Cell borders",[
+            MenuItem("Clear",lambda:self.set_cell_border("none",False)),Separator(),
+            MenuItem("Outline single",lambda:self.set_cell_border("single",True)),
+            MenuItem("All single",lambda:self.set_cell_border("single",False)),
+            MenuItem("Outline thick",lambda:self.set_cell_border("thick",True)),
+            MenuItem("All thick",lambda:self.set_cell_border("thick",False)),
+        ]);
         style_menu=Menu("Style",[
             MenuItem("Bold",self.toggle_bold,"Ctrl+B"),MenuItem("Underline",self.toggle_underline,"Ctrl+U"),Separator(),
             MenuItem("Foreground",submenu=color_menu("fg")),MenuItem("Background",submenu=color_menu("bg")),
-            MenuItem("Borders",submenu=border_menu),Separator(),
+            MenuItem("Cell borders",submenu=cell_borders),Separator(),
             MenuItem("Align left",lambda:self.align("left")),MenuItem("Align center",lambda:self.align("center")),MenuItem("Align right",lambda:self.align("right")),
         ]);
+        view_menu=Menu("View",[
+            MenuItem("Grid lines",self.toggle_gridlines,checked=lambda:self.show_gridlines),
+            MenuItem("Column headers",self.toggle_column_headers,checked=lambda:self.show_column_headers),
+            MenuItem("Row headers",self.toggle_row_headers,checked=lambda:self.show_row_headers),
+            MenuItem("Grid style",submenu=grid_style),
+        ]);
+        preview_options=Menu("Preview options",[
+            MenuItem("Grid lines",lambda:self.toggle_preview("gridlines"),checked=lambda:self.preview_gridlines),
+            MenuItem("Column headers",lambda:self.toggle_preview("column_headers"),checked=lambda:self.preview_column_headers),
+            MenuItem("Row headers",lambda:self.toggle_preview("row_headers"),checked=lambda:self.preview_row_headers),
+        ]);
         return MenuBar([
-            Menu("File",[MenuItem("New",self.new),MenuItem("Open",self.open_dialog),MenuItem("Save",self.save,"Ctrl+S"),MenuItem("Save as",self.save_as),Separator(),MenuItem("Print preview",self.preview),Separator(),MenuItem("Add sheet",self.add_sheet),MenuItem("Quit",self.quit)]),
+            Menu("File",[MenuItem("New",self.new),MenuItem("Open",self.open_dialog),MenuItem("Save",self.save,"Ctrl+S"),MenuItem("Save as",self.save_as),Separator(),MenuItem("Print preview",self.preview),MenuItem("Preview options",submenu=preview_options),Separator(),MenuItem("Add sheet",self.add_sheet),MenuItem("Quit",self.quit)]),
             Menu("Edit",[MenuItem("Undo",self.undo,"Ctrl+Z"),MenuItem("Redo",self.redo,"Ctrl+Y"),Separator(),MenuItem("Copy",self.copy,"Ctrl+C"),MenuItem("Cut",self.cut,"Ctrl+X"),MenuItem("Paste",self.paste,"Ctrl+V"),Separator(),MenuItem("Fill down",lambda:self.fill("down")),MenuItem("Fill right",lambda:self.fill("right")),Separator(),MenuItem("Insert row",self.insert_row),MenuItem("Insert column",self.insert_col)]),
-            style_menu,
+            style_menu,view_menu,
             Menu("Data",[MenuItem("Recalculate",self.recalculate,"F9"),MenuItem("Go to cell",self.goto,"F5")]),
             Menu("Tools",[MenuItem("Theme",self.choose_theme)]),
             Menu("Help",[MenuItem("Keys",self.help),MenuItem("About",self.about)]),
@@ -268,7 +300,7 @@ class SESController:
     def open_menu(self): self.menu.open(); self.app.focus.set(self.menu); self.app.invalidate(); return True;
     def _external(self,callback): return self.app.run_external(callback);
     def persist(self):
-        try: save_preferences({"theme":self.theme_name,"border":self.border,"last_dir":str(Path(self.file).expanduser().resolve().parent) if self.file else self.preferences.get("last_dir",str(Path.cwd()))});
+        try: save_preferences({"theme":self.theme_name,"border":self.border,"show_gridlines":self.show_gridlines,"show_column_headers":self.show_column_headers,"show_row_headers":self.show_row_headers,"preview_gridlines":self.preview_gridlines,"preview_column_headers":self.preview_column_headers,"preview_row_headers":self.preview_row_headers,"last_dir":str(Path(self.file).expanduser().resolve().parent) if self.file else self.preferences.get("last_dir",str(Path.cwd()))});
         except OSError as exc: self.note(f"Preferences not saved: {exc}");
     def new(self): self.book=Book(); self.file=None; self.selection_changed(); self.note("New workbook"); return True;
     def open_dialog(self):
@@ -345,7 +377,16 @@ class SESController:
     def align(self,value):
         try: self.book.style(self.selected(),"align",value); return self.note("Alignment changed");
         except SheetError as exc: return self.note(str(exc));
-    def set_border(self,name): self.border=name; self.persist(); return self.note(f"Border: {name}");
+    def set_border(self,name):
+        self.border="single" if name=="none" else name; self.show_gridlines=(name!="none"); self.persist(); return self.note(f"Grid style: {self.border}");
+    def toggle_gridlines(self): self.show_gridlines=not self.show_gridlines; self.persist(); return self.note("Grid lines "+("on" if self.show_gridlines else "off"));
+    def toggle_column_headers(self): self.show_column_headers=not self.show_column_headers; self.persist(); return self.note("Column headers "+("on" if self.show_column_headers else "off"));
+    def toggle_row_headers(self): self.show_row_headers=not self.show_row_headers; self.persist(); return self.note("Row headers "+("on" if self.show_row_headers else "off"));
+    def toggle_preview(self,what):
+        attr="preview_"+what; setattr(self,attr,not getattr(self,attr)); self.persist(); return self.note("Preview "+what.replace("_"," ")+" "+("on" if getattr(self,attr) else "off"));
+    def set_cell_border(self,style,outline=False):
+        try: self.book.border(self.selected(),style,outline=outline); return self.note(("Outline " if outline else "Cell borders ")+style);
+        except SheetError as exc: return self.note(str(exc));
     def recalculate(self): self.book.dirty=True; self.note("Recalculated"); return True;
     def goto(self):
         result=self._external(lambda:read_entry(text="Cell",default=self.addr(),title="Go to",theme=self.theme_name));
@@ -362,7 +403,7 @@ class SESController:
         return True;
     def preview(self):
         try:
-            path=make_pdf(self.book); self._external(lambda:open_file(path)); return self.note(f"Preview: {path}");
+            path=make_pdf(self.book,gridlines=self.preview_gridlines,column_headers=self.preview_column_headers,row_headers=self.preview_row_headers); self._external(lambda:open_file(path)); return self.note(f"Preview: {path}");
         except Exception as exc: return self.note(f"Preview error: {exc}");
     def help(self): self._external(lambda:show_message("\n".join(HELP),title="SES keys",theme=self.theme_name)); return True;
     def about(self): self._external(lambda:show_message(f"SES {__version__} - alpha\nGNU GPL-3.0-or-later",title="About SES",theme=self.theme_name)); return True;
@@ -385,11 +426,12 @@ def main(argv=None):
     if args.demo and args.file: parser.error("choose either FILE or --demo");
     pref=load_preferences(); theme=args.theme or pref.get("theme","DOS");
     if theme.casefold() not in [name.casefold() for name in available_theme_names(include_hidden=True)]: parser.error("Unknown theme: "+theme);
-    border=args.border or ("single" if args.grid else ("none" if args.no_grid else pref.get("border","none")));
+    border=args.border or ("single" if args.grid else ("none" if args.no_grid else pref.get("border","single")));
+    show_gridlines=True if (args.grid or (args.border and args.border!="none")) else (False if (args.no_grid or args.border=="none") else pref.get("show_gridlines",False));
     try: book=Book.load(Path(args.file).expanduser()) if args.file else (sample_book() if args.demo else Book());
     except Exception as exc: parser.exit(2,f"ses: cannot open {args.file}: {exc}\n");
     if not sys.stdin.isatty() or not sys.stdout.isatty(): parser.exit(2,"ses: interactive terminal required\n");
-    return SESController(book=book,filename=args.file,theme=theme,border=border,preferences=pref).run();
+    return SESController(book=book,filename=args.file,theme=theme,border=border,preferences=pref,show_gridlines=show_gridlines).run();
 
 
 if __name__=="__main__": raise SystemExit(main());

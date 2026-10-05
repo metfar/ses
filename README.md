@@ -1,4 +1,4 @@
-# SES 0.1.0a6 — sumEditSpreadsheet
+# SES 0.1.0a7 — sumEditSpreadsheet
 
 SES is the keyboard-first spreadsheet/table editor for the sum ecosystem. This revision moves the whole interactive shell to **sumTUI** instead of maintaining a parallel curses UI, so menus, mouse routing, dialogs, themes, status bars and focus behavior come from the same transversal layer used by the other sum applications.
 
@@ -53,7 +53,7 @@ and the thick variant:
 
 `File -> Print preview` builds a PDF from the active sheet and opens it with the platform viewer (`xdg-open` on Linux, `open` on macOS, the native shell on Windows). The PDF path is temporary. Preview uses WeasyPrint when available, which is already part of the sumdoc stack; SES does not attempt to emulate a graphical page preview inside the terminal.
 
-Current preview includes cell values, basic alignment, bold/underline and table borders. Page setup, repeating headers, print areas and full SDSS styling remain later work.
+Preview now separates editing aids from document formatting. Grid lines, column headers and row headers are independently configurable and are OFF by default for preview/printing. Explicit cell/table borders are stored in the workbook and are always rendered in preview regardless of those options. Page setup, repeating headers, print areas and full SDSS styling remain later work.
 
 ## Demo and command line
 
@@ -66,7 +66,21 @@ ses --list-themes
 
 `--grid` is retained as an alias for `--border single`, and `--no-grid` for `--border none`.
 
-Preferences are stored under `${XDG_CONFIG_HOME:-~/.config}/sumtui/ses.json` and currently include theme, border style and the last directory.
+Preferences are stored under `${XDG_CONFIG_HOME:-~/.config}/sumtui/ses.json` and include theme, grid style, visible grid lines, row/column headers, preview grid/header choices, and the last directory.
+
+## Grid aids and real table borders
+
+`View` controls the editing surface independently: grid lines, column headers and row headers can each be shown or hidden. These are interface aids, not cell formatting.
+
+`Style -> Cell borders` applies semantic borders (`single` or `thick`) to the selected cells/range. Those borders belong to the workbook and therefore remain visible in PDF preview even when preview grid lines and headings are disabled. This distinction is intended for reuse by SEP when SES is invoked to edit document tables.
+
+Preview defaults are deliberately clean:
+
+```text
+grid lines      off
+column headers  off
+row headers     off
+```
 
 ## Formula coverage
 

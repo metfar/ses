@@ -240,6 +240,10 @@ class Cell:
     underline: bool=False
     fg: int=7
     bg: int=0
+    border_top: str='none'
+    border_right: str='none'
+    border_bottom: str='none'
+    border_left: str='none'
 
 @dataclass
 class Sheet:
@@ -281,7 +285,7 @@ class Book:
             old=self.get(key,sh)
             prefix=raw[0] if raw and raw[0] in ('\'','^','"','\\') else None
             align={'\'':'left','^':'center','"':'right','\\':'repeat'}.get(prefix,'general')
-            self.sheets[sh].cells[key]=Cell(raw,old.bold,align,old.underline,old.fg,old.bg)
+            self.sheets[sh].cells[key]=Cell(raw,old.bold,align,old.underline,old.fg,old.bg,old.border_top,old.border_right,old.border_bottom,old.border_left)
         self.change(apply)
     def toggle_bold(self,addresses):
         def apply():
@@ -297,7 +301,7 @@ class Book:
             self.sheets[self.active].cells[f'{colname(c)}{d}']=source
         self.change(apply)
     def style(self,addresses,attribute,value=None):
-        if attribute not in ('bold','underline','fg','bg','align'):
+        if attribute not in ('bold','underline','fg','bg','align','border_top','border_right','border_bottom','border_left'):
             raise ValueError('Unknown style')
         addresses=list(addresses)
         def apply():
@@ -307,6 +311,31 @@ class Book:
                 setattr(cell,attribute,not current if value is None else value)
                 self.sheets[self.active].cells[addr]=cell
         self.change(apply)
+
+
+    def border(self, addresses, style="single", outline=False):
+        """Apply semantic cell borders to a rectangular selection in one undo unit."""
+        style=str(style or "none").lower();
+        if style not in ("none","single","thick"): raise ValueError("Unknown border style")
+        addresses=list(addresses);
+        if not addresses: return
+        coords=[cellref(addr)[:2] for addr in addresses];
+        minc=min(c for c,_ in coords); maxc=max(c for c,_ in coords); minr=min(r for _,r in coords); maxr=max(r for _,r in coords);
+        selected={(c,r) for c,r in coords};
+        def apply():
+            for c,r in selected:
+                addr=f"{colname(c)}{r}"; cell=copy.deepcopy(self.get(addr));
+                if style == "none":
+                    cell.border_top=cell.border_right=cell.border_bottom=cell.border_left="none";
+                elif outline:
+                    cell.border_top=style if r==minr else cell.border_top;
+                    cell.border_bottom=style if r==maxr else cell.border_bottom;
+                    cell.border_left=style if c==minc else cell.border_left;
+                    cell.border_right=style if c==maxc else cell.border_right;
+                else:
+                    cell.border_top=cell.border_right=cell.border_bottom=cell.border_left=style;
+                self.sheets[self.active].cells[addr]=cell;
+        self.change(apply);
 
     def copy_block(self,source,destination,move=False):
         """Copy rectangular block to destination top-left in one undo unit."""
