@@ -7,12 +7,12 @@ import re
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_HALF_EVEN, ROUND_UP, ROUND_DOWN
 from pathlib import Path
-from sumcore.lexicon import resolve as resolve_lexeme, SUPPORTED_LANGUAGES
+from sumcore.lexicon import resolve as resolve_lexeme, display_name, SUPPORTED_LANGUAGES
 from sumcore.text import repeat as core_repeat, trim as core_trim, ltrim as core_ltrim, rtrim as core_rtrim, alltrim as core_alltrim, like as core_like, ilike as core_ilike
 from sumcore.formatting import numformat as core_numformat, dateformat as core_dateformat, textformat as core_textformat, boolformat as core_boolformat
 
 CELL = re.compile(r'(?i)^(\$?)([A-Z]+)(\$?)([1-9][0-9]*)$')
-TOKEN = re.compile(r'''\s*(?:(?P<string>"(?:[^"]|"")*")|(?P<number>\d+(?:_\d+)*(?:\.\d+(?:_\d+)*)?(?:[eE][+-]?\d+)?)|(?P<word>\$?(?:[^\W\d]|_)[\w.$]*\$?[0-9]*|\$[A-Za-z]+\$?[0-9]+)|(?P<op><=|>=|<>|!=|[+*/^&=<>(),;:!%-]))''',re.UNICODE)
+TOKEN = re.compile(r'''\s*(?:(?P<string>"(?:[^"]|"")*")|(?P<number>\d+(?:_\d+)*(?:\.\d+(?:_\d+)*)?(?:[eE][+-]?\d+)?)|(?P<word>\$?(?:[^\W\d]|_)[\w.$]*\$?[0-9]*|\$[A-Za-z]+\$?[0-9]+)|(?P<op><=|>=|<>|!=|\.\.\.?|[+*/^&=<>(),;:!%-]))''',re.UNICODE)
 
 class SheetError(Exception):
     def __init__(self, code, detail=''):
@@ -60,7 +60,43 @@ def transform_formula(expr, dc, dr):
     return pat.sub(sub, expr)
 
 
+def translate_formula(expr, source_language, target_language):
+    """Translate function/constant spellings while preserving references and strings."""
+    if source_language == target_language:
+        return expr
+    source_language = source_language if source_language in SUPPORTED_LANGUAGES else "en"
+    target_language = target_language if target_language in SUPPORTED_LANGUAGES else "en"
+    pattern = re.compile(r'"(?:[^"]|"")*"|(?P<word>[^\W\d][\w.]*)(?P<ws>\s*)(?P<call>\()? ', re.UNICODE | re.X)
+    # The compact scanner below deliberately leaves cell refs and arbitrary identifiers alone.
+    wordpat = re.compile(r'"(?:[^"]|"")*"|(?P<word>[^\W\d][\w.]*)(?P<tail>\s*\()?', re.UNICODE)
+    def repl(match):
+        token = match.group(0)
+        if token.startswith('"'):
+            return token
+        word = match.group('word')
+        tail = match.group('tail') or ''
+        if CELL.fullmatch(word):
+            return token
+        if tail:
+            canonical = resolve_lexeme(word, source_language, 'function')
+            if canonical:
+                return display_name(canonical, target_language, 'function') + tail
+        canonical = resolve_lexeme(word, source_language, 'constant')
+        if canonical:
+            return display_name(canonical, target_language, 'constant') + tail
+        return token
+    return wordpat.sub(repl, expr)
+
+
+def _normalize_range_syntax(expr):
+    parts=re.split(r'("(?:[^"]|"")*")',expr);
+    cell=r'(\$?[A-Za-z]{1,4}\$?[1-9]\d*)';
+    for i in range(0,len(parts),2):
+        parts[i]=re.sub(cell+r'\s*\.{2,3}\s*'+cell,r'\1:\2',parts[i]);
+    return ''.join(parts);
+
 def tokenize(expr):
+    expr=_normalize_range_syntax(expr);
     pos, out = 0, []
     while pos < len(expr):
         if expr[pos:].strip() == '': break
@@ -108,11 +144,11 @@ class Parser:
             elif (constant:=resolve_lexeme(val,self.language,'constant')) in ('TRUE','FALSE','UNKNOWN'): node=('literal',True if constant=='TRUE' else False if constant=='FALSE' else None)
             else: raise SheetError('#NAME?',f'Unknown name {val}')
         else: raise SheetError('#PARSE!', f'Unexpected {val}')
-        precedence={'=':10,'<>':10,'!=':10,'>':10,'<':10,'>=':10,'<=':10,'&':15,'+':20,'-':20,'*':30,'/':30,'%':30,'^':40,':':50}
+        precedence={'=':10,'<>':10,'!=':10,'>':10,'<':10,'>=':10,'<=':10,'&':15,'+':20,'-':20,'*':30,'/':30,'%':30,'^':40,':':50,'..':50,'...':50}
         while (op:=self.see()) in precedence and precedence[op]>=minimum:
             self.take(); p=precedence[op]
             rhs=self.expr(p if op=='^' else p+1)
-            if op==':':
+            if op in (':','..','...'):
                 if node[0]!='ref' or rhs[0]!='ref' or node[1]!=rhs[1]: raise SheetError('#RANGE!')
                 node=('range',node[1],node[2],rhs[2])
             else: node=('bin',op,node,rhs)
@@ -217,6 +253,11 @@ def function(name, args):
         idx=(source.find(needle,pos) if name=='FIND' else source.casefold().find(needle.casefold(),pos))
         if idx<0: raise SheetError('#VALUE!',f'{needle!r} not found')
         return idx+1
+    if name=='INSTR':
+        if len(a)==2: pos,source,needle=0,str(a[0]),str(a[1])
+        elif len(a)>=3: pos,source,needle=max(0,int(number(a[0]))),str(a[1]),str(a[2])
+        else: raise SheetError('#VALUE!')
+        return source.find(needle,pos)
     if name in ('LENGTH','LEN'): return len(str(a[0]))
     if name=='UPPER': return str(a[0]).upper()
     if name=='LOWER': return str(a[0]).lower()
@@ -519,6 +560,22 @@ class Book:
                         sh.row_heights={str((int(k)+count) if int(k)>=index else int(k)):v for k,v in sh.row_heights.items()}
                     else:
                         sh.column_widths={str((int(k)+count) if int(k)>=index else int(k)):v for k,v in sh.column_widths.items()}
+        self.change(apply)
+
+    def set_formula_language(self, language):
+        """Translate stored formulas to *language* and switch the document parser language."""
+        if language not in SUPPORTED_LANGUAGES:
+            raise SheetError('#VALUE!', 'Unknown formula language')
+        old = self.formula_language
+        if old == language:
+            return
+        def apply():
+            for sh in self.sheets.values():
+                for cell in sh.cells.values():
+                    if cell.raw.startswith(('=','+','@')):
+                        cell.raw = cell.raw[:1] + translate_formula(cell.raw[1:], old, language)
+            self.formula_language = language
+            self.dirty = True
         self.change(apply)
 
     def evaluate(self,addr,sheet=None):

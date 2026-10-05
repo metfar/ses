@@ -35,7 +35,7 @@ from sumtui import (
     Application, HBox, Key, KeyEvent, Label, Menu, MenuBar, MenuDesktop,
     MenuItem, MouseEvent, Separator, StatusBar, TextInput, VBox, Widget,
     ask_question, available_theme_names, choose_file, choose_list,
-    read_entry, refresh_user_themes, show_message,
+    read_entry, read_form, refresh_user_themes, show_message,
 );
 
 from .borders import border_names, glyphs;
@@ -126,11 +126,11 @@ class SpreadsheetGrid(Widget):
     def _layout_map(self):
         h=self.layout_height or 20; w=self.layout_width or 80;
         roww=self.ROWW if self.host.show_row_headers else 0; y=1 if self.host.show_column_headers else 0;
-        cols=[]; x=roww; col=self.host.scrollx;
+        cols=[]; x=roww + (1 if self.host.show_gridlines else 0); col=self.host.scrollx;
         while x < w and len(cols)<256:
             cw=self._col_width(col);
             if x+cw>w and cols: break;
-            cols.append((col,x,cw)); x+=cw + (1 if self.host.show_gridlines and x+cw<w else 0); col+=1;
+            cols.append((col,x,cw)); x+=cw + (1 if self.host.show_gridlines else 0); col+=1;
         rows=[]; row=self.host.scrolly;
         if self.host.show_gridlines: y+=1;
         while y < h and len(rows)<8192:
@@ -210,28 +210,62 @@ class SpreadsheetGrid(Widget):
         lines=[]; roww=self.ROWW if self.host.show_row_headers else 0;
         if self.host.show_column_headers:
             header=Text(" "*roww,style=self.theme.style("table_header"));
-            for i,(col,_x,cw) in enumerate(self.visible_cols):
+            if self.host.show_gridlines: header.append(" ",style=self.theme.style("border"));
+            for col,_x,cw in self.visible_cols:
                 header.append(f"{colname(col):^{cw}}",style=self.theme.style("table_header"));
-                if self.host.show_gridlines and i<len(self.visible_cols)-1: header.append(" ",style=self.theme.style("border"));
+                if self.host.show_gridlines: header.append(" ",style=self.theme.style("border"));
             lines.append(header);
-        border=glyphs(self.host.border if self.host.border!="none" else "single") if self.host.show_gridlines else None;
-        def horizontal():
-            line=(border.l if roww else "") if border else "";
-            if roww: line=" "*roww;
-            if border:
-                line += border.x.join(border.h*cw for _c,_x,cw in self.visible_cols);
+        def strongest(*styles):
+            return "thick" if "thick" in styles else "single" if "single" in styles else "none";
+        def g(style): return glyphs(style if style in ("single","thick") else "single");
+        def vertical_style(row,left_col,right_col=None):
+            left=self.host.book.get(f"{colname(left_col)}{row}");
+            if right_col is None: return left.border_right;
+            right=self.host.book.get(f"{colname(right_col)}{row}");
+            return strongest(left.border_right,right.border_left);
+        def boundary(upper_row,lower_row):
+            line=Text(" "*roww,style=self.theme.style("border"));
+            if not self.host.show_gridlines: return line;
+            segments=[];
+            for col,_x,cw in self.visible_cols:
+                top=self.host.book.get(f"{colname(col)}{lower_row}").border_top if lower_row else "none";
+                bottom=self.host.book.get(f"{colname(col)}{upper_row}").border_bottom if upper_row else "none";
+                segments.append(strongest(top,bottom));
+            # left edge/intersections are present only where a real border touches them.
+            for i,style in enumerate(segments):
+                if i==0:
+                    lefts=[];
+                    if upper_row: lefts.append(self.host.book.get(f"{colname(self.visible_cols[0][0])}{upper_row}").border_left);
+                    if lower_row: lefts.append(self.host.book.get(f"{colname(self.visible_cols[0][0])}{lower_row}").border_left);
+                    joint=strongest(style,*lefts); line.append(g(joint).x if joint!="none" else " ");
+                line.append((g(style).h if style!="none" else " ")*self.visible_cols[i][2]);
+                rights=[]; col=self.visible_cols[i][0];
+                if upper_row: rights.append(self.host.book.get(f"{colname(col)}{upper_row}").border_right);
+                if lower_row: rights.append(self.host.book.get(f"{colname(col)}{lower_row}").border_right);
+                next_style=segments[i+1] if i+1<len(segments) else "none";
+                joint=strongest(style,next_style,*rights); line.append(g(joint).x if joint!="none" else " ");
             return line;
-        if border: lines.append(Text(horizontal(),style=self.theme.style("border")));
+        if self.host.show_gridlines and self.visible_rows:
+            lines.append(boundary(None,self.visible_rows[0][0]));
         for ri,(row,_ry,rh) in enumerate(self.visible_rows):
             for sub in range(rh):
                 line=Text((f"{row:>{self.ROWW-1}} " if sub==0 else " "*self.ROWW) if self.host.show_row_headers else "",style=self.theme.style("table_header"));
+                if self.host.show_gridlines:
+                    first=self.host.book.get(f"{colname(self.visible_cols[0][0])}{row}");
+                    st=first.border_left; line.append(g(st).v if st!="none" else " ",style=self.theme.style("border"));
                 for ci,(col,_cx,cw) in enumerate(self.visible_cols):
                     address=f"{colname(col)}{row}"; cell=self.host.book.get(address); selected=self.host.contains(col,row); current=(col,row)==(self.host.cx,self.host.cy);
                     line.append(self._formatted(address,cw,sub),style=self._cell_style(cell,selected,current));
-                    if border and ci<len(self.visible_cols)-1: line.append(border.v,style=self.theme.style("border"));
+                    if self.host.show_gridlines:
+                        if ci+1<len(self.visible_cols): st=vertical_style(row,col,self.visible_cols[ci+1][0]);
+                        else: st=cell.border_right;
+                        line.append(g(st).v if st!="none" else " ",style=self.theme.style("border"));
                 lines.append(line);
-            if border and ri<len(self.visible_rows)-1: lines.append(Text(horizontal(),style=self.theme.style("border")));
+            if self.host.show_gridlines:
+                next_row=self.visible_rows[ri+1][0] if ri+1<len(self.visible_rows) else None;
+                lines.append(boundary(row,next_row));
         yield Group(*lines);
+
 
 
 class SESController:
@@ -315,7 +349,7 @@ class SESController:
         style_menu=Menu("Style",[
             MenuItem("Bold",self.toggle_bold,"Ctrl+B"),MenuItem("Underline",self.toggle_underline,"Ctrl+U"),Separator(),
             MenuItem("Foreground",submenu=color_menu("fg")),MenuItem("Background",submenu=color_menu("bg")),
-            MenuItem("Cell borders",submenu=cell_borders),MenuItem("PICTURE",self.set_picture),Separator(),
+            MenuItem("Cell format...",self.cell_format,"Ctrl+1"),MenuItem("Cell borders",submenu=cell_borders),MenuItem("PICTURE",self.set_picture),Separator(),
             MenuItem("Column width",self.set_column_width),MenuItem("Row height",self.set_row_height),Separator(),
             MenuItem("Align left",lambda:self.align("left")),MenuItem("Align center",lambda:self.align("center")),MenuItem("Align right",lambda:self.align("right")),
         ]);
@@ -340,7 +374,7 @@ class SESController:
         ],on_close=lambda:self.app.focus.set(self.grid));
     def _install_bindings(self):
         bindings={"f1":self.help,"f2":lambda:self.start_edit(False),"f5":self.goto,"f6":self.next_sheet,"f9":self.recalculate,"f10":self.open_menu,
-                  "ctrl+1":self.set_picture,"ctrl+z":self.undo,"ctrl+y":self.redo,"ctrl+c":self.copy,"ctrl+x":self.cut,"ctrl+v":self.paste,"ctrl+b":self.toggle_bold,"ctrl+u":self.toggle_underline,"ctrl+s":self.save,"escape":self.cancel_edit};
+                  "ctrl+1":self.cell_format,"ctrl+z":self.undo,"ctrl+y":self.redo,"ctrl+c":self.copy,"ctrl+x":self.cut,"ctrl+v":self.paste,"ctrl+b":self.toggle_bold,"ctrl+u":self.toggle_underline,"ctrl+s":self.save,"escape":self.cancel_edit};
         for key,callback in bindings.items(): self.app.bind(key,callback);
     def open_menu(self): self.menu.open(); self.app.focus.set(self.menu); self.app.invalidate(); return True;
     def _external(self,callback): return self.app.run_external(callback);
@@ -440,6 +474,36 @@ class SESController:
                 self.book.set_row_height(rows,int(result.value)); self.note(f"Row height {int(result.value)}");
             except (ValueError,SheetError) as exc: self.note(f"ERROR {exc}");
         return True;
+    def cell_format(self):
+        cell=self.book.get(self.addr());
+        colors=("Black","Red","Green","Yellow","Blue","Magenta","Cyan","White");
+        categories=("General","Number","Percent","Currency","Date","Time","Scientific","Fraction","Boolean","Text","User-defined");
+        fields=[
+            {"name":"category","label":"Category","kind":"combo","default":"User-defined" if cell.picture else "General","options":categories},
+            {"name":"picture","label":"PICTURE / format code","kind":"entry","default":cell.picture},
+            {"name":"align","label":"Alignment","kind":"combo","default":cell.align,"options":("general","left","center","right","repeat")},
+            {"name":"bold","label":"Bold","kind":"checkbox","default":cell.bold},
+            {"name":"underline","label":"Underline","kind":"checkbox","default":cell.underline},
+            {"name":"fg","label":"Foreground","kind":"combo","default":colors[cell.fg%8],"options":colors},
+            {"name":"bg","label":"Background","kind":"combo","default":colors[cell.bg%8],"options":colors},
+        ];
+        result=self._external(lambda:read_form(fields,title="Cell format",theme=self.theme_name));
+        if not result.accepted: return True;
+        values=result.value or {}; picture=str(values.get("picture","") or ""); category=str(values.get("category","General"));
+        presets={"General":"","Number":"0.00","Percent":"0.00%","Currency":"$ 0.00","Scientific":"0.00E+00","Boolean":"FALSE|TRUE|UNKNOWN","Text":"","User-defined":picture};
+        if not picture and category in presets: picture=presets[category];
+        try:
+            addresses=self.selected();
+            self.book.style(addresses,"picture",picture);
+            self.book.style(addresses,"align",str(values.get("align","general")));
+            self.book.style(addresses,"bold",bool(values.get("bold",False)));
+            self.book.style(addresses,"underline",bool(values.get("underline",False)));
+            self.book.style(addresses,"fg",colors.index(str(values.get("fg","White"))));
+            self.book.style(addresses,"bg",colors.index(str(values.get("bg","Black"))));
+            self.note("Cell format updated");
+        except (ValueError,SheetError) as exc: self.note(f"ERROR {exc}");
+        return True;
+
     def set_picture(self):
         current=self.book.get(self.addr()).picture;
         result=self._external(lambda:read_entry(text="PICTURE (0 required digit, # optional digit)",default=current,title="Cell PICTURE",theme=self.theme_name));
@@ -468,8 +532,12 @@ class SESController:
         names=list(self.book.sheets); self.book.active=names[(names.index(self.book.active)+1)%len(names)]; self.book.dirty=True; self.selection_changed(); return True;
     def set_formula_language(self,language):
         if language not in SUPPORTED_LANGUAGES: return self.note("Unknown formula language");
-        self.book.formula_language=language; self.book.dirty=True; self.persist();
-        return self.note("Formula language: "+language.upper());
+        try:
+            self.book.set_formula_language(language);
+            self.refresh_formula(); self.persist();
+            return self.note("Formula language: "+language.upper());
+        except SheetError as exc:
+            return self.note(str(exc));
     def function_help(self):
         topics=help_topics(self.book.formula_language,"function");
         lines=[];
@@ -516,7 +584,7 @@ def main(argv=None):
     show_gridlines=True if (args.grid or (args.border and args.border!="none")) else (False if (args.no_grid or args.border=="none") else pref.get("show_gridlines",False));
     try:
         book=Book.load(Path(args.file).expanduser()) if args.file else (sample_book() if args.demo else Book(args.formula_language or pref.get("formula_language","en")));
-        if args.formula_language: book.formula_language=args.formula_language;
+        if args.formula_language: book.set_formula_language(args.formula_language);
     except Exception as exc: parser.exit(2,f"ses: cannot open {args.file}: {exc}\n");
     if not sys.stdin.isatty() or not sys.stdout.isatty(): parser.exit(2,"ses: interactive terminal required\n");
     return SESController(book=book,filename=args.file,theme=theme,border=border,preferences=pref,show_gridlines=show_gridlines).run();

@@ -1,4 +1,4 @@
-# SES 0.1.0a10 — sumEditSpreadsheet
+# SES 0.1.0a11 — sumEditSpreadsheet
 
 SES is the keyboard-first spreadsheet/table editor for the sum ecosystem. This revision moves the whole interactive shell to **sumTUI** instead of maintaining a parallel curses UI, so menus, mouse routing, dialogs, themes, status bars and focus behavior come from the same transversal layer used by the other sum applications.
 
@@ -89,7 +89,7 @@ The current engine includes arithmetic, ranges, cross-sheet references, circular
 SES remains alpha software. Keep backups of real business workbooks while the file format and editing semantics are still evolving.
 
 
-## SES 0.1.0a10
+## SES 0.1.0a11
 
 - PDF/PNG preview uses the same value-to-text conversion as the TUI: plain numeric values do not gain `.0` unless a `PICTURE` requests decimals.
 - Printable columns are proportionally fitted to A4 landscape width so wide sheets are not clipped; additional rows paginate naturally.

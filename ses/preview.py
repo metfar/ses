@@ -76,7 +76,7 @@ def workbook_html(book,title="SES preview",*,gridlines=False,column_headers=Fals
     widths=[book.column_width(col) for col in range(1,cols+1)]; total=max(1,sum(widths)); fontpt=_font_size(book,cols);
     lines=["<!doctype html><meta charset='utf-8'>",f"<title>{html.escape(title)}</title>",
            "<style>@page{size:A4 landscape;margin:10mm}html,body{margin:0;padding:0}"
-           f"body{{font-family:monospace;font-size:{fontpt:.2f}pt;color:#000;background:#fff}}"
+           f"body{{font-family:monospace;font-size:{fontpt:.2f}pt;color:{DOS_COLORS[7]};background:{DOS_COLORS[0]}}}"
            "table{border-collapse:collapse;width:100%;table-layout:fixed;break-inside:auto}"
            "tr{break-inside:avoid}td,th{padding:1px 3px;white-space:pre;overflow:hidden;vertical-align:top}"
            f"td{{border:{grid_border}}}th{{border:{grid_border};background:#eee;color:#000}} .n{{text-align:right}}</style>",
@@ -101,8 +101,8 @@ def workbook_html(book,title="SES preview",*,gridlines=False,column_headers=Fals
             if cell.bold: style.append("font-weight:bold");
             if cell.underline: style.append("text-decoration:underline");
             if cell.align in ("left","center","right"): style.append("text-align:"+cell.align);
-            if cell.fg_explicit: style.append("color:"+DOS_COLORS.get(int(cell.fg),"#000000"));
-            if cell.bg_explicit: style.append("background-color:"+DOS_COLORS.get(int(cell.bg),"#ffffff"));
+            style.append("color:"+DOS_COLORS.get(int(cell.fg),DOS_COLORS[7]));
+            style.append("background-color:"+DOS_COLORS.get(int(cell.bg),DOS_COLORS[0]));
             style_attr=(" style='"+";".join(style)+"'") if style else "";
             lines.append(f"<td{cls}{style_attr}>{html.escape(text)}</td>");
         lines.append("</tr>");

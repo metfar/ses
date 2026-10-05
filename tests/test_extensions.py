@@ -36,7 +36,7 @@ def test_about_uses_current_version():
     controller._external=lambda cb: cb();
     with patch("ses.tui.show_message") as dialog:
         controller.about();
-    assert "0.1.0a10" in dialog.call_args.args[0];
+    assert "0.1.0a11" in dialog.call_args.args[0];
 
 
 def test_preview_editing_aids_default_off_but_explicit_borders_remain():
@@ -103,8 +103,9 @@ def test_preview_keeps_explicit_cell_colors_only():
     text=workbook_html(b);
     assert "color:#aa0000" in text;
     assert "background-color:#00aaaa" in text;
-    # Default B1 colors are not forced onto the printable page.
-    assert text.count("background-color:")==1;
+    # Preview preserves the document's default paper/ink as well as explicit colours.
+    assert "color:#aaaaaa" in text;
+    assert "background-color:#000000" in text;
 
 def test_explicit_color_flags_survive_roundtrip(tmp_path):
     b=Book(); b.put("A1","1"); b.style(["A1"],"fg",0); b.style(["A1"],"bg",7);
