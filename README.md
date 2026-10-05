@@ -1,4 +1,4 @@
-# SES 0.1.0a3 — experimental terminal spreadsheet
+# SES 0.1.0a4 — experimental terminal spreadsheet
 
 A first, **independent** implementation of SES, inspired by the keyboard-first text interface of Quattro Pro / Lotus 1-2-3. It does **not** alter sumcore or any existing sum packages. Python >= 3.10, curses (Linux) and sumTUI >= 0.8.0a30, which also supplies the shared dialogs and theme definitions.
 
@@ -76,7 +76,7 @@ Cut/paste moves the source formula without retargeting all dependent formulas.
 Use backups for actual business records. Shift/Ctrl mouse selection depends on
 terminal modifier reporting; it may not be reliable in all terminals.
 
-## SES 0.1.0a3 — CLI, file dialogs and preferences (regression fix)
+## SES 0.1.0a4 — CLI, file dialogs and preferences (regression fix)
 
 - `ses --theme DOS --demo` restores the demo and theme options.
 - `ses /path/to/mybook.ses` opens a native workbook before the TUI starts.

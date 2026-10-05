@@ -5,6 +5,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from rich.style import Style
 from .engine import Book, SheetError, cellref, colname
 
 MENUS={
@@ -15,7 +16,7 @@ MENUS={
  'Tools':['Command line','Show formula'],
  'Help':['Keys','Functions','About']}
 HELP=[
- 'SES 0.1.0a3 - terminal spreadsheet',
+ 'SES 0.1.0a4 - terminal spreadsheet',
  'F2 or click formula bar: edit; typing replaces; Tab in edit: pick range',
  'Ctrl+C copy  Ctrl+X cut  Ctrl+V paste  Ctrl+B bold  Ctrl+U underline',
  'Ctrl+Z undo  Ctrl+Y redo  F1 help  F5 goto  F6 next sheet',
@@ -27,7 +28,8 @@ HELP=[
  ':copy A1:B3 D5   :cut A1:B3 D5   :fill down A1:A9',
  ':row 4  :col C  :grid  :fg 3  :bg 1  :underline',
  'Formula: =SUM(A1:B4), @AVG(A1:A10), =COUNTIF(A1:A10;">5")',
- 'Open/Save dialogs: sumTUI; --theme DOS; --demo; ses file.ses']
+ 'Open/Save dialogs: sumTUI; --theme DOS; --demo; ses file.ses',
+ 'Demo: conditions, VLOOKUP, SUMIF, COUNTIF and cell colors']
 
 # Only SES preferences live here. Theme definitions stay in sumTUI/sumtheme.
 def preference_path():
@@ -61,10 +63,34 @@ def save_preferences(data,path=None):
 
 
 def sample_book():
+    """Useful demo: conditions, lookups, criteria functions and cell colors."""
     book=Book();
-    for addr,value in {'A1':"'Item",'B1':"'Price",'A2':"'Tea",'B2':'120',
-                       'A3':"'Coffee",'B3':'175','A4':"'Total",'B4':'=SUM(B2:B3)'}.items():
-        book.put(addr,value);
+    # Price table used by VLOOKUP.
+    data={
+        'A1':"'Code", 'B1':"'Item", 'C1':"'Price", 'D1':"'Stock",
+        'A2':"'TEA", 'B2':"'Tea", 'C2':'120', 'D2':'8',
+        'A3':"'COF", 'B3':"'Coffee", 'C3':'175', 'D3':'3',
+        'A4':"'MIL", 'B4':"'Milk", 'C4':'95', 'D4':'15',
+        'F1':"'Sale", 'G1':"'Code", 'H1':"'Qty", 'I1':"'Unit", 'J1':"'Total", 'K1':"'Status",
+        'F2':"'1", 'G2':"'TEA", 'H2':'2', 'I2':'=VLOOKUP(G2;A2:C4;3;FALSE)', 'J2':'=H2*I2', 'K2':'=IF(J2>=250;"BIG";"SMALL")',
+        'F3':"'2", 'G3':"'COF", 'H3':'1', 'I3':'=VLOOKUP(G3;A2:C4;3;FALSE)', 'J3':'=H3*I3', 'K3':'=IF(J3>=250;"BIG";"SMALL")',
+        'F4':"'3", 'G4':"'MIL", 'H4':'4', 'I4':'=VLOOKUP(G4;A2:C4;3;FALSE)', 'J4':'=H4*I4', 'K4':'=IF(J4>=250;"BIG";"SMALL")',
+        'F6':"'Sales total", 'J6':'=SUM(J2:J4)',
+        'F7':"'Big sales", 'J7':'=COUNTIF(K2:K4;"BIG")',
+        'F8':"'Tea total", 'J8':'=SUMIF(G2:G4;"TEA";J2:J4)',
+        'F9':"'Low stock", 'J9':'=COUNTIF(D2:D4;"<5")',
+    };
+    for addr,value in data.items(): book.put(addr,value);
+    # Formatting deliberately exercises SES colors independent of the selected theme.
+    book.style(['A1','B1','C1','D1','F1','G1','H1','I1','J1','K1'],'bold',True);
+    book.style(['A1','B1','C1','D1'],'bg',4); book.style(['A1','B1','C1','D1'],'fg',15 if False else 7);
+    book.style(['F1','G1','H1','I1','J1','K1'],'bg',1);
+    book.style(['F6','F7','F8','F9'],'bold',True);
+    book.style(['J6'],'bg',2); book.style(['J7'],'bg',3); book.style(['J8'],'bg',6); book.style(['J9'],'bg',4);
+    book.style(['J6','J7','J8','J9'],'bold',True);
+    # Static colors illustrate per-cell formatting; formulas remain live.
+    # Conditional formatting rules are a later feature.
+    book.style(['K2','K3'],'fg',4); book.style(['K4'],'fg',2); book.style(['K2','K3','K4'],'bold',True);
     return book;
 
 
@@ -111,21 +137,43 @@ class App:
         curses.mousemask(curses.ALL_MOUSE_EVENTS|curses.REPORT_MOUSE_POSITION)
         win.keypad(True); win.timeout(-1)
 
+    def _style_attr(self,style_text,pair_number):
+        """Translate a sumTUI/Rich style into a curses attribute.
+
+        This intentionally consumes Theme.style(role), not raw Theme color fields,
+        so user style_overrides (for example theme MC) are honored exactly like
+        other sumTUI applications.
+        """
+        style=Style.parse(str(style_text or '')); attr=0;
+        if style.bold: attr|=curses.A_BOLD
+        if style.underline: attr|=curses.A_UNDERLINE
+        if style.reverse: attr|=curses.A_REVERSE
+        if style.dim: attr|=curses.A_DIM
+        if getattr(curses,'A_ITALIC',0) and style.italic: attr|=curses.A_ITALIC
+        if not self.colors or pair_number>=curses.COLOR_PAIRS: return attr
+        def rgb(color, fallback):
+            if color is None: return fallback
+            try:
+                triplet=color.get_truecolor()
+                return (triplet.red,triplet.green,triplet.blue)
+            except Exception: return fallback
+        fore=rgb(style.color,self.theme.text); back=rgb(style.bgcolor,self.theme.bg);
+        try:
+            curses.init_pair(pair_number,xterm_index(fore,curses.COLORS),xterm_index(back,curses.COLORS));
+            attr|=curses.color_pair(pair_number)
+        except (curses.error,ValueError): pass
+        return attr
+
     def apply_theme(self,name):
         self.theme=theme_palette(str(name)); self.theme_name=self.theme.name;
         self.theme_pairs={};
-        if not self.colors: return;
-        roles={'menu':('text','panel'),'formula':('command_text','command_bg'),
-               'headers':('text','panel'),'body':('viewer_text','viewer_bg'),
-               'status':('text','panel'),'selection':('selection_text','selection_bg')};
-        for number,(role,(fore,back)) in enumerate(roles.items(),65):
-            if number>=curses.COLOR_PAIRS: break;
-            f=xterm_index(getattr(self.theme,fore),curses.COLORS);
-            b=xterm_index(getattr(self.theme,back),curses.COLORS);
-            try:
-                curses.init_pair(number,f,b);
-                self.theme_pairs[role]=curses.color_pair(number);
-            except curses.error: pass;
+        # Semantic roles match sumTUI itself. This also honors per-role overrides
+        # saved by sumtheme/themeedit instead of rebuilding a second theme system.
+        roles={'menu':'menu_bar','formula':'input','headers':'table_header',
+               'body':'viewer','status':'status','selection':'selection',
+               'grid':'border','prompt':'input_focus'};
+        for number,(local,semantic) in enumerate(roles.items(),65):
+            self.theme_pairs[local]=self._style_attr(self.theme.style(semantic),number);
 
     def shade(self,role):
         return self.theme_pairs.get(role,0);
@@ -208,9 +256,9 @@ class App:
         except curses.error: pass
     def draw(self):
         self.adjust(); self.win.erase(); h,w,cols,rows=self.limits()
-        self.put(0,0,'  '.join(self.menu_names),self.shade('menu')|curses.A_BOLD)
-        self.put(1,0,f'{self.book.active}  {self.addr()}: {self.book.get(self.addr()).raw}',self.shade('formula')|curses.A_BOLD)
-        self.put(2,0,'    '+''.join(f'{colname(x):^12}' for x in range(self.scrollx,self.scrollx+cols)),self.shade('headers')|curses.A_BOLD)
+        self.put(0,0,'  '.join(self.menu_names),self.shade('menu'))
+        self.put(1,0,f'{self.book.active}  {self.addr()}: {self.book.get(self.addr()).raw}',self.shade('formula'))
+        self.put(2,0,'    '+''.join(f'{colname(x):^12}' for x in range(self.scrollx,self.scrollx+cols)),self.shade('headers'))
         for idx in range(rows):
             yy=3+idx*(2 if self.grid else 1); row=self.scrolly+idx
             row_selected=self.mode=='row' and self.contains(self.cx,row)
@@ -226,24 +274,24 @@ class App:
                 else: s=s.ljust(12)
                 attr=self.shade('body')|(curses.A_BOLD if cell.bold else 0)|(curses.A_UNDERLINE if cell.underline else 0)
                 if self.colors and (cell.fg!=7 or cell.bg!=0): attr=curses.color_pair(1+int(cell.bg)%8*8+int(cell.fg)%8)|(attr & (curses.A_BOLD|curses.A_UNDERLINE))
-                if self.contains(col,row): attr|=curses.A_REVERSE
+                if self.contains(col,row): attr=self.shade('selection')|(attr & (curses.A_BOLD|curses.A_UNDERLINE))
                 if col==self.cx and row==self.cy: attr|=curses.A_BOLD|curses.A_UNDERLINE
                 self.put(yy,4+12*j,s,attr)
                 if self.grid:
-                    self.put(yy,4+12*j+11,'│',curses.A_DIM)
+                    self.put(yy,4+12*j+11,'│',self.shade('grid'))
             if self.grid and idx<rows-1:
-                self.put(yy+1,4,('───────────┼'*cols)[:max(0,w-5)],curses.A_DIM)
+                self.put(yy+1,4,('───────────┼'*cols)[:max(0,w-5)],self.shade('grid'))
         if self.grid:
             # One-line separators in the existing cell width; no layout/scroll changes.
-            self.put(2,4,'┼'+''.join('───────────┼' for _ in range(cols))[:max(0,w-6)],curses.A_REVERSE)
-            self.put(2,4,''.join(f'{colname(x):^11}│' for x in range(self.scrollx,self.scrollx+cols))[:w-5],curses.A_REVERSE)
-        self.put(h-2,0,'─'*(w-1),curses.A_DIM)
+            self.put(2,4,'┼'+''.join('───────────┼' for _ in range(cols))[:max(0,w-6)],self.shade('headers'))
+            self.put(2,4,''.join(f'{colname(x):^11}│' for x in range(self.scrollx,self.scrollx+cols))[:w-5],self.shade('headers'))
+        self.put(h-2,0,'─'*(w-1),self.shade('grid'))
         amount=sum((c-a+1)*(d-b+1) for a,b,c,d in self.rects())
         self.put(h-1,0,f'{self.book.active} | {self.addr()} | {amount} selected | {self.message}',self.shade('status'))
         self.win.refresh()
     def prompt(self,title,default=''):
-        h,w=self.win.getmaxyx(); self.put(h-1,0,' '*(w-1),curses.A_REVERSE)
-        self.put(h-1,0,title+default,curses.A_REVERSE)
+        h,w=self.win.getmaxyx(); self.put(h-1,0,' '*(w-1),self.shade('prompt'))
+        self.put(h-1,0,title+default,self.shade('prompt'))
         curses.echo()
         try: curses.curs_set(1)
         except curses.error: pass
@@ -270,7 +318,7 @@ class App:
             while True:
                 self.draw(); h,w=self.win.getmaxyx()
                 if pick:
-                    self.put(h-1,0,('PICK '+self.range_spec()+'  Enter: insert; Esc: cancel').ljust(w-1),curses.A_REVERSE)
+                    self.put(h-1,0,('PICK '+self.range_spec()+'  Enter: insert; Esc: cancel').ljust(w-1),self.shade('status'))
                     try: curses.curs_set(0)
                     except curses.error: pass
                 else:
@@ -278,9 +326,9 @@ class App:
                     prefix=f'{self.addr()} ▸ '
                     usable=max(1,w-len(prefix)-2)
                     offset=max(0,pos-usable+1)
-                    self.put(1,0,' '*(w-1),curses.A_REVERSE)
-                    self.put(1,0,prefix+value[offset:offset+usable],curses.A_REVERSE|curses.A_UNDERLINE)
-                    self.put(h-1,0,'EDIT: Enter confirms / Esc cancels / Tab selects range'.ljust(w-1),curses.A_REVERSE)
+                    self.put(1,0,' '*(w-1),self.shade('formula'))
+                    self.put(1,0,prefix+value[offset:offset+usable],self.shade('formula')|curses.A_UNDERLINE)
+                    self.put(h-1,0,'EDIT: Enter confirms / Esc cancels / Tab selects range'.ljust(w-1),self.shade('status'))
                     try: curses.curs_set(1)
                     except curses.error: pass
                     try: self.win.move(1,min(w-2,len(prefix)+pos-offset))
@@ -490,7 +538,7 @@ class App:
                         'IF AND OR NOT ABS ROUND ROUNDUP ROUNDDOWN CEIL FLOOR',
                         'VALUE CONCAT STRING LEFT RIGHT MID FIND LENGTH',
                         'INDEX CHOOSE VLOOKUP HLOOKUP SQRT MOD UPPER LOWER'])
-                elif action=='About': self.modal(['SES 0.1.0a3 - alpha','GNU GPL-3.0-or-later'])
+                elif action=='About': self.modal(['SES 0.1.0a4 - alpha','GNU GPL-3.0-or-later'])
                 return
     def run(self):
         while self.running:
@@ -524,7 +572,7 @@ def argument_parser():
     flags=parser.add_mutually_exclusive_group();
     flags.add_argument('--grid',action='store_true',help='show DOS gridlines');
     flags.add_argument('--no-grid',action='store_true',help='hide DOS gridlines');
-    parser.add_argument('--version',action='version',version='SES 0.1.0a3');
+    parser.add_argument('--version',action='version',version='SES 0.1.0a4');
     return parser;
 
 

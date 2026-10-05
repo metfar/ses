@@ -21,8 +21,8 @@ class CLIRegressionTests(unittest.TestCase):
 
     def test_demo_produces_real_formulas(self):
         b=sample_book()
-        self.assertEqual(b.evaluate('B4'),295)
-        self.assertEqual(b.get('B4').raw,'=SUM(B2:B3)')
+        self.assertEqual(b.evaluate('J6'),795.0)
+        self.assertEqual(b.get('J6').raw,'=SUM(J2:J4)')
 
     def test_preferences_roundtrip_and_corruption(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -73,3 +73,31 @@ class DialogIntegrationTests(unittest.TestCase):
         with patch('ses.tui.curses.def_prog_mode'), patch('ses.tui.curses.endwin'), patch('ses.tui.curses.reset_prog_mode'), patch('sumtui.dialogs.read_entry') as entry:
             app.shared_dialog('entry','/tmp/my file.ses',title='Save as')
             entry.assert_called_once_with(text='File name or full path',default='/tmp/my file.ses',title='Save as',theme='ZX')
+
+class DemoAndThemeRegressionTests(unittest.TestCase):
+    def test_demo_exercises_condition_lookup_criteria_and_colors(self):
+        b=sample_book()
+        self.assertEqual(b.evaluate('I2'),120.0)
+        self.assertEqual(b.evaluate('K2'),'SMALL')
+        self.assertEqual(b.evaluate('K4'),'BIG')
+        self.assertEqual(b.evaluate('J6'),795.0)
+        self.assertEqual(b.evaluate('J7'),1)
+        self.assertEqual(b.evaluate('J8'),240.0)
+        self.assertEqual(b.evaluate('J9'),1)
+        self.assertEqual(b.get('J6').bg,2)
+        self.assertTrue(b.get('J6').bold)
+
+    def test_apply_theme_uses_sumtui_semantic_roles(self):
+        from ses.tui import App
+        theme=type('Theme',(),{
+            'name':'MC','style':lambda self,role:'STYLE:'+role
+        })()
+        app=App.__new__(App); app.colors=False; app.theme_pairs={}
+        seen=[]
+        app._style_attr=lambda style,number: seen.append((style,number)) or number
+        with patch('ses.tui.theme_palette',return_value=theme):
+            app.apply_theme('MC')
+        self.assertEqual(app.theme_name,'MC')
+        self.assertEqual([item[0] for item in seen],[
+            'STYLE:menu_bar','STYLE:input','STYLE:table_header','STYLE:viewer',
+            'STYLE:status','STYLE:selection','STYLE:border','STYLE:input_focus'])
