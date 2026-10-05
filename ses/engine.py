@@ -232,6 +232,44 @@ def function(name, args):
     raise SheetError('#NAME?',f'Unknown function: {name}')
 
 
+def format_picture(value, picture):
+    """Format a display value without changing its stored value.
+
+    SES PICTURE alpha syntax: 0 = required digit, # = optional digit; the
+    rightmost '.' or ',' between digit placeholders is the decimal mark.
+    Other characters are literals, so ``$ 0000.00`` is immediately useful.
+    """
+    if not picture or value is None: return value;
+    if not isinstance(value,(int,float)) or isinstance(value,bool): return str(value);
+    pic=str(picture); positions=[i for i,c in enumerate(pic) if c in '0#'];
+    if not positions: return pic;
+    first,last=min(positions),max(positions); core=pic[first:last+1]; prefix=pic[:first]; suffix=pic[last+1:];
+    decimal=-1; decchar='.';
+    for i,c in enumerate(core):
+        if c in '.,' and any(x in '0#' for x in core[:i]) and any(x in '0#' for x in core[i+1:]): decimal=i; decchar=c;
+    left=core if decimal<0 else core[:decimal]; right='' if decimal<0 else core[decimal+1:];
+    lslots=sum(c in '0#' for c in left); rslots=sum(c in '0#' for c in right);
+    neg=float(value)<0; num=abs(float(value)); rendered=f"{num:.{rslots}f}"; ip,_,fp=rendered.partition('.');
+    # Preserve values wider than the picture instead of silently truncating them.
+    if len(ip)>lslots: return str(value);
+    digits=list(ip.rjust(lslots,'0')); di=0; out='';
+    leading=len(ip); optional_to_blank=max(0,lslots-leading); seen_slots=0;
+    for c in left:
+        if c in '0#':
+            d=digits[di]; di+=1;
+            if c=='#' and seen_slots<optional_to_blank: d=' ';
+            seen_slots+=1; out+=d;
+        else: out+=c;
+    if rslots:
+        di=0; rout='';
+        for c in right:
+            if c in '0#': rout+=fp[di] if di<len(fp) else ('0' if c=='0' else ' '); di+=1;
+            else: rout+=c;
+        out+=decchar+rout;
+    if neg: out='-'+out;
+    return prefix+out+suffix;
+
+
 @dataclass
 class Cell:
     raw: str=''
@@ -244,10 +282,13 @@ class Cell:
     border_right: str='none'
     border_bottom: str='none'
     border_left: str='none'
+    picture: str=''
 
 @dataclass
 class Sheet:
     cells: dict=field(default_factory=dict)
+    column_widths: dict=field(default_factory=dict)
+    row_heights: dict=field(default_factory=dict)
 
 
 class Book:
@@ -285,7 +326,7 @@ class Book:
             old=self.get(key,sh)
             prefix=raw[0] if raw and raw[0] in ('\'','^','"','\\') else None
             align={'\'':'left','^':'center','"':'right','\\':'repeat'}.get(prefix,'general')
-            self.sheets[sh].cells[key]=Cell(raw,old.bold,align,old.underline,old.fg,old.bg,old.border_top,old.border_right,old.border_bottom,old.border_left)
+            self.sheets[sh].cells[key]=Cell(raw,old.bold,align,old.underline,old.fg,old.bg,old.border_top,old.border_right,old.border_bottom,old.border_left,old.picture)
         self.change(apply)
     def toggle_bold(self,addresses):
         def apply():
@@ -301,7 +342,7 @@ class Book:
             self.sheets[self.active].cells[f'{colname(c)}{d}']=source
         self.change(apply)
     def style(self,addresses,attribute,value=None):
-        if attribute not in ('bold','underline','fg','bg','align','border_top','border_right','border_bottom','border_left'):
+        if attribute not in ('bold','underline','fg','bg','align','border_top','border_right','border_bottom','border_left','picture'):
             raise ValueError('Unknown style')
         addresses=list(addresses)
         def apply():
@@ -311,6 +352,31 @@ class Book:
                 setattr(cell,attribute,not current if value is None else value)
                 self.sheets[self.active].cells[addr]=cell
         self.change(apply)
+
+
+    def column_width(self, col, sheet=None):
+        sh=self.sheets[sheet or self.active];
+        return max(1,int(sh.column_widths.get(str(int(col)),12)));
+
+    def row_height(self, row, sheet=None):
+        sh=self.sheets[sheet or self.active];
+        return max(1,int(sh.row_heights.get(str(int(row)),1)));
+
+    def set_column_width(self, cols, width):
+        width=max(1,min(254,int(width))); cols=[int(c) for c in cols]; sh=self.sheets[self.active];
+        def apply():
+            for col in cols: sh.column_widths[str(col)]=width;
+        self.change(apply);
+
+    def set_row_height(self, rows, height):
+        height=max(1,min(99,int(height))); rows=[int(r) for r in rows]; sh=self.sheets[self.active];
+        def apply():
+            for row in rows: sh.row_heights[str(row)]=height;
+        self.change(apply);
+
+    def set_picture(self, addresses, picture):
+        self.style(addresses,'picture',str(picture or ''));
+
 
 
     def border(self, addresses, style="single", outline=False):
@@ -417,6 +483,11 @@ class Book:
                     cell.raw=replace_refs(cell.raw,name)
                     rebuilt[f'{colname(x)}{y}']=cell
                 sh.cells=rebuilt
+                if name==target_sheet:
+                    if axis=='row':
+                        sh.row_heights={str((int(k)+count) if int(k)>=index else int(k)):v for k,v in sh.row_heights.items()}
+                    else:
+                        sh.column_widths={str((int(k)+count) if int(k)>=index else int(k)):v for k,v in sh.column_widths.items()}
         self.change(apply)
 
     def evaluate(self,addr,sheet=None):
@@ -491,11 +562,18 @@ class Book:
         raise SheetError('#PARSE!')
     def save(self,path):
         obj={'format':'ses-0.1','active':self.active,'sheets':{
-            name:{k:vars(v) for k,v in sh.cells.items()} for name,sh in self.sheets.items()}}
+            name:{'cells':{k:vars(v) for k,v in sh.cells.items()},'column_widths':sh.column_widths,'row_heights':sh.row_heights} for name,sh in self.sheets.items()}}
         Path(path).write_text(json.dumps(obj,ensure_ascii=False,indent=2),encoding='utf-8')
     @classmethod
     def load(cls,path):
         obj=json.loads(Path(path).read_text(encoding='utf-8'))
         if obj.get('format')!='ses-0.1': raise SheetError('#FILE!','Not a SES 0.1 document')
-        b=cls(); b.sheets={name:Sheet({k:Cell(**v) for k,v in cells.items()}) for name,cells in obj['sheets'].items()}
+        b=cls(); b.sheets={}
+        for name,data in obj['sheets'].items():
+            # Backward compatible with a1-a7 files where the sheet value was directly the cells mapping.
+            if 'cells' in data and isinstance(data.get('cells'),dict):
+                cells=data.get('cells',{}); widths=data.get('column_widths',{}); heights=data.get('row_heights',{});
+            else:
+                cells=data; widths={}; heights={};
+            b.sheets[name]=Sheet({k:Cell(**v) for k,v in cells.items()},dict(widths),dict(heights))
         b.active=obj['active']; return b

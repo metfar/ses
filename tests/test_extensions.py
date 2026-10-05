@@ -36,7 +36,7 @@ def test_about_uses_current_version():
     controller._external=lambda cb: cb();
     with patch("ses.tui.show_message") as dialog:
         controller.about();
-    assert "0.1.0a7" in dialog.call_args.args[0];
+    assert "0.1.0a8" in dialog.call_args.args[0];
 
 
 def test_preview_editing_aids_default_off_but_explicit_borders_remain():
@@ -75,3 +75,17 @@ def test_controller_preview_defaults_are_off():
     assert controller.preview_gridlines is False;
     assert controller.preview_column_headers is False;
     assert controller.preview_row_headers is False;
+
+def test_dimensions_picture_and_persistence(tmp_path):
+    from ses.engine import Book, format_picture
+    b=Book(); b.put('A1','5'); b.set_column_width([1],18); b.set_row_height([1],2); b.set_picture(['A1'],' $ 0000.00 ')
+    assert b.column_width(1)==18
+    assert b.row_height(1)==2
+    assert format_picture(b.evaluate('A1'),b.get('A1').picture)==' $ 0005.00 '
+    p=tmp_path/'dims.ses'; b.save(p); c=Book.load(p)
+    assert c.column_width(1)==18 and c.row_height(1)==2 and c.get('A1').picture==' $ 0000.00 '
+
+def test_picture_does_not_change_value():
+    from ses.engine import Book
+    b=Book(); b.put('A1','5'); b.set_picture(['A1'],'000.00')
+    assert b.evaluate('A1')==5.0

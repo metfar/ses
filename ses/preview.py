@@ -29,7 +29,7 @@ import subprocess;
 import tempfile;
 from pathlib import Path;
 
-from .engine import colname;
+from .engine import colname, format_picture;
 
 
 def used_extent(book, sheet=None):
@@ -74,13 +74,13 @@ def workbook_html(book, title="SES preview", *, gridlines=False, column_headers=
         lines.append("</tr></thead>");
     lines.append("<tbody>");
     for row in range(1,rows+1):
-        lines.append("<tr>");
+        lines.append(f"<tr style=\"height:{book.row_height(row)*1.4:.1f}em\">");
         if row_headers: lines.append(f"<th>{row}</th>");
         for col in range(1,cols+1):
             addr=f"{colname(col)}{row}"; cell=book.get(addr); value=book.evaluate(addr);
-            text="" if value is None else str(value);
+            shown=format_picture(value,cell.picture); text="" if shown is None else str(shown);
             cls=" class='n'" if isinstance(value,(int,float)) else "";
-            style=_border_css(cell);
+            style=_border_css(cell); style.append(f"min-width:{book.column_width(col)}ch");
             if cell.bold: style.append("font-weight:bold");
             if cell.underline: style.append("text-decoration:underline");
             if cell.align in ("left","center","right"): style.append("text-align:"+cell.align);

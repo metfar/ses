@@ -1,4 +1,4 @@
-# SES 0.1.0a7 — sumEditSpreadsheet
+# SES 0.1.0a8 — sumEditSpreadsheet
 
 SES is the keyboard-first spreadsheet/table editor for the sum ecosystem. This revision moves the whole interactive shell to **sumTUI** instead of maintaining a parallel curses UI, so menus, mouse routing, dialogs, themes, status bars and focus behavior come from the same transversal layer used by the other sum applications.
 
@@ -87,5 +87,14 @@ row headers     off
 The current engine includes arithmetic, ranges, cross-sheet references, circular-reference detection, copying/filling of relative formulas, and functions including `SUM`, `AVG`, `COUNT`, `SUMPRODUCT`, `COUNTIF`, `COUNTIFS`, `SUMIF`, `SUMIFS`, `IF`, `AND`, `OR`, `NOT`, `ROUND`, `ROUNDUP`, `ROUNDDOWN`, `CEIL`, `FLOOR`, `VALUE`, `STRING`, `CONCAT`, `LEFT`, `RIGHT`, `MID`, `FIND`, `LENGTH`, `INDEX`, `CHOOSE`, `VLOOKUP` and `HLOOKUP`.
 
 SES remains alpha software. Keep backups of real business workbooks while the file format and editing semantics are still evolving.
+
+
+## SES 0.1.0a8
+
+- Persistent column widths (in terminal characters) and row heights (in terminal rows).
+- Empty cells preserve their configured dimensions in the TUI and print preview.
+- Cell `PICTURE` display format, independent from the stored value; for example `$ 0000.00` renders `5` as `$ 0005.00`.
+- Mouse drag selects a rectangular range.
+- Width, height and PICTURE changes participate in undo/redo and are stored in `.ses` files.
 
 <p align=center><b>- oOo -</b></p>

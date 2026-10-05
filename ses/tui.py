@@ -39,7 +39,7 @@ from sumtui import (
 );
 
 from .borders import border_names, glyphs;
-from .engine import Book, Cell, SheetError, cellref, colname, transform_formula;
+from .engine import Book, Cell, SheetError, cellref, colname, transform_formula, format_picture;
 from .preview import make_pdf, open_file;
 from .version import __version__;
 
@@ -49,7 +49,7 @@ HELP = [
     "F2/click formula: edit cell; typing replaces cell",
     "Ctrl+C/X/V copy/cut/paste   Ctrl+Z/Y undo/redo",
     "Ctrl+B bold   Ctrl+U underline   F5 goto   F6 next sheet",
-    "Shift+arrows extends selection",
+    "Shift+arrows extends selection; mouse drag selects a rectangular range",
     "Click row/column header selects it; Shift extends; Ctrl adds disjoint selection",
     "View controls editing grid lines and row/column headings independently",
     "Style > Cell borders marks real document/table borders for preview/print",
@@ -112,52 +112,84 @@ class FormulaLabel(Widget):
 
 class SpreadsheetGrid(Widget):
     focusable=True;
-    COLW=12; ROWW=5;
+    ROWW=5;
     def __init__(self,host):
-        super().__init__(); self.host=host; self.view_cols=1; self.view_rows=1;
-    def _pitch(self): return 2 if self.host.show_gridlines else 1;
+        super().__init__(); self.host=host; self.view_cols=1; self.view_rows=1; self.visible_cols=[]; self.visible_rows=[]; self.mouse_selecting=False;
+    def _col_width(self,col): return self.host.book.column_width(col);
+    def _row_height(self,row): return self.host.book.row_height(row);
+    def _layout_map(self):
+        h=self.layout_height or 20; w=self.layout_width or 80;
+        roww=self.ROWW if self.host.show_row_headers else 0; y=1 if self.host.show_column_headers else 0;
+        cols=[]; x=roww; col=self.host.scrollx;
+        while x < w and len(cols)<256:
+            cw=self._col_width(col);
+            if x+cw>w and cols: break;
+            cols.append((col,x,cw)); x+=cw + (1 if self.host.show_gridlines and x+cw<w else 0); col+=1;
+        rows=[]; row=self.host.scrolly;
+        if self.host.show_gridlines: y+=1;
+        while y < h and len(rows)<8192:
+            rh=self._row_height(row);
+            if y+rh>h and rows: break;
+            rows.append((row,y,rh)); y+=rh + (1 if self.host.show_gridlines and y+rh<h else 0); row+=1;
+        self.visible_cols=cols or [(self.host.scrollx,roww,max(1,w-roww))]; self.visible_rows=rows or [(self.host.scrolly,y,max(1,h-y))];
+        self.view_cols=len(self.visible_cols); self.view_rows=len(self.visible_rows);
     def _adjust(self):
-        h=self.layout_height or 20; w=self.layout_width or 80; pitch=self._pitch();
-        roww=self.ROWW if self.host.show_row_headers else 0; head=1 if self.host.show_column_headers else 0;
-        self.view_cols=max(1,(w-roww)//self.COLW); self.view_rows=max(1,(h-head)//pitch);
+        self._layout_map();
         if self.host.cx<self.host.scrollx: self.host.scrollx=self.host.cx;
-        if self.host.cx>=self.host.scrollx+self.view_cols: self.host.scrollx=self.host.cx-self.view_cols+1;
+        elif self.visible_cols and self.host.cx>self.visible_cols[-1][0]: self.host.scrollx=max(1,self.host.cx-max(0,len(self.visible_cols)-1));
         if self.host.cy<self.host.scrolly: self.host.scrolly=self.host.cy;
-        if self.host.cy>=self.host.scrolly+self.view_rows: self.host.scrolly=self.host.cy-self.view_rows+1;
+        elif self.visible_rows and self.host.cy>self.visible_rows[-1][0]: self.host.scrolly=max(1,self.host.cy-max(0,len(self.visible_rows)-1));
+        self._layout_map();
     def _cell_style(self,cell,selected,current):
         style=self.theme.style("selection" if selected else "viewer");
         if cell.bold: style += " bold";
         if cell.underline: style += " underline";
         if current: style += " reverse";
-        # Explicit cell colors intentionally override the theme; this is spreadsheet data formatting.
         if cell.fg!=7 or cell.bg!=0:
             ansi=["black","red","green","yellow","blue","magenta","cyan","white"];
             style += f" {ansi[cell.fg%8]} on {ansi[cell.bg%8]}";
         return style;
-    def _formatted(self,address):
+    def _formatted(self,address,width,line_index=0):
         cell=self.host.book.get(address); value=self.host.book.evaluate(address);
-        text="" if value is None else (format(value,".11g") if isinstance(value,float) else str(value)); text=text[:self.COLW];
-        if cell.align=="repeat" and text: text=(text*((self.COLW//len(text))+1))[:self.COLW];
-        if cell.align=="center": return text.center(self.COLW);
-        if cell.align=="right" or (cell.align=="general" and isinstance(value,(int,float))): return text.rjust(self.COLW);
-        return text.ljust(self.COLW);
-    def _border_line(self,left,middle,right,horizontal):
-        return left + middle.join(horizontal*self.COLW for _ in range(self.view_cols)) + right;
+        shown=format_picture(value,cell.picture);
+        text="" if shown is None else (format(shown,".11g") if isinstance(shown,float) else str(shown));
+        # Row height reserves real blank screen rows. For now content is on the first row.
+        if line_index>0: text="";
+        text=text[:width];
+        if cell.align=="repeat" and text: text=(text*((width//len(text))+1))[:width];
+        if cell.align=="center": return text.center(width);
+        if cell.align=="right" or (cell.align=="general" and isinstance(value,(int,float))): return text.rjust(width);
+        return text.ljust(width);
+    def _coord_at(self,x,y):
+        self._adjust();
+        roww=self.ROWW if self.host.show_row_headers else 0;
+        if self.host.show_column_headers and y==0:
+            for col,cx,cw in self.visible_cols:
+                if cx<=x<cx+cw: return ('col',col);
+            return None;
+        for row,ry,rh in self.visible_rows:
+            if ry<=y<ry+rh:
+                if self.host.show_row_headers and x<roww: return ('row',row);
+                for col,cx,cw in self.visible_cols:
+                    if cx<=x<cx+cw: return ('cell',col,row);
+                return None;
+        return None;
     def handle_event(self,event):
         if isinstance(event,MouseEvent):
-            if event.action!="press" or event.button!="left": return False;
-            if self._focus_manager is not None: self._focus_manager.set(self);
-            self._adjust(); pitch=self._pitch();
-            roww=self.ROWW if self.host.show_row_headers else 0; head=1 if self.host.show_column_headers else 0;
-            if self.host.show_column_headers and event.y==0 and event.x>=roww:
-                col=self.host.scrollx+(event.x-roww)//self.COLW; self.host.select_header("col",col,event.shift,event.ctrl); return True;
-            data_y=event.y-head;
-            if data_y<0 or data_y%pitch!=0: return True;
-            row=self.host.scrolly+data_y//pitch;
-            if self.host.show_row_headers and event.x<roww: self.host.select_header("row",row,event.shift,event.ctrl); return True;
-            col=self.host.scrollx+(event.x-roww)//self.COLW; self.host.select_cell(col,row,event.shift,event.ctrl);
-            if event.action=="press" and getattr(event,"double",False): self.host.start_edit(False);
-            return True;
+            if event.button!="left": return False;
+            hit=self._coord_at(event.x,event.y);
+            if event.action=="press":
+                if self._focus_manager is not None: self._focus_manager.set(self);
+                if not hit: return True;
+                if hit[0]=="col": self.host.select_header("col",hit[1],event.shift,event.ctrl); return True;
+                if hit[0]=="row": self.host.select_header("row",hit[1],event.shift,event.ctrl); return True;
+                self.mouse_selecting=True; self.host.select_cell(hit[1],hit[2],event.shift,event.ctrl); self.host.anchor=(hit[1],hit[2]); return True;
+            if event.action in ("move","drag") and self.mouse_selecting:
+                if hit and hit[0]=="cell": self.host.cx,self.host.cy=hit[1],hit[2]; self.host.mode="cell"; self.host.selection_changed();
+                return True;
+            if event.action=="release" and self.mouse_selecting:
+                self.mouse_selecting=False; return True;
+            return False;
         if not isinstance(event,KeyEvent): return False;
         if event.key in (Key.LEFT,Key.RIGHT,Key.UP,Key.DOWN):
             dx={Key.LEFT:-1,Key.RIGHT:1}.get(event.key,0); dy={Key.UP:-1,Key.DOWN:1}.get(event.key,0);
@@ -166,27 +198,34 @@ class SpreadsheetGrid(Widget):
         if event.key==Key.PAGE_DOWN: self.host.move(0,max(1,self.view_rows),event.shift); return True;
         if event.key==Key.ENTER: self.host.start_edit(False); return True;
         if event.key==Key.F2: self.host.start_edit(False); return True;
-        if event.text and not event.ctrl and not event.alt:
-            self.host.start_edit(True,event.text); return True;
+        if event.text and not event.ctrl and not event.alt: self.host.start_edit(True,event.text); return True;
         return False;
     def __rich_console__(self,console,options):
         self.set_bounds(self.x,self.y,options.max_width,options.height or options.max_height or console.height); self._adjust();
         lines=[]; roww=self.ROWW if self.host.show_row_headers else 0;
         if self.host.show_column_headers:
             header=Text(" "*roww,style=self.theme.style("table_header"));
-            for col in range(self.host.scrollx,self.host.scrollx+self.view_cols):
-                header.append(f"{colname(col):^{self.COLW}}",style=self.theme.style("table_header"));
+            for i,(col,_x,cw) in enumerate(self.visible_cols):
+                header.append(f"{colname(col):^{cw}}",style=self.theme.style("table_header"));
+                if self.host.show_gridlines and i<len(self.visible_cols)-1: header.append(" ",style=self.theme.style("border"));
             lines.append(header);
         border=glyphs(self.host.border if self.host.border!="none" else "single") if self.host.show_gridlines else None;
-        if border: lines.append(Text(self._border_line(border.l,border.x,border.r,border.h),style=self.theme.style("border")));
-        for ri in range(self.view_rows):
-            row=self.host.scrolly+ri; line=Text(f"{row:>{self.ROWW-1}} " if self.host.show_row_headers else "",style=self.theme.style("table_header"));
-            for col in range(self.host.scrollx,self.host.scrollx+self.view_cols):
-                address=f"{colname(col)}{row}"; cell=self.host.book.get(address); selected=self.host.contains(col,row); current=(col,row)==(self.host.cx,self.host.cy);
-                line.append(self._formatted(address),style=self._cell_style(cell,selected,current));
-                if border and col<self.host.scrollx+self.view_cols-1: line.append(border.v,style=self.theme.style("border"));
-            lines.append(line);
-            if border and ri<self.view_rows-1: lines.append(Text(self._border_line(border.l,border.x,border.r,border.h),style=self.theme.style("border")));
+        def horizontal():
+            line=(border.l if roww else "") if border else "";
+            if roww: line=" "*roww;
+            if border:
+                line += border.x.join(border.h*cw for _c,_x,cw in self.visible_cols);
+            return line;
+        if border: lines.append(Text(horizontal(),style=self.theme.style("border")));
+        for ri,(row,_ry,rh) in enumerate(self.visible_rows):
+            for sub in range(rh):
+                line=Text((f"{row:>{self.ROWW-1}} " if sub==0 else " "*self.ROWW) if self.host.show_row_headers else "",style=self.theme.style("table_header"));
+                for ci,(col,_cx,cw) in enumerate(self.visible_cols):
+                    address=f"{colname(col)}{row}"; cell=self.host.book.get(address); selected=self.host.contains(col,row); current=(col,row)==(self.host.cx,self.host.cy);
+                    line.append(self._formatted(address,cw,sub),style=self._cell_style(cell,selected,current));
+                    if border and ci<len(self.visible_cols)-1: line.append(border.v,style=self.theme.style("border"));
+                lines.append(line);
+            if border and ri<len(self.visible_rows)-1: lines.append(Text(horizontal(),style=self.theme.style("border")));
         yield Group(*lines);
 
 
@@ -271,7 +310,8 @@ class SESController:
         style_menu=Menu("Style",[
             MenuItem("Bold",self.toggle_bold,"Ctrl+B"),MenuItem("Underline",self.toggle_underline,"Ctrl+U"),Separator(),
             MenuItem("Foreground",submenu=color_menu("fg")),MenuItem("Background",submenu=color_menu("bg")),
-            MenuItem("Cell borders",submenu=cell_borders),Separator(),
+            MenuItem("Cell borders",submenu=cell_borders),MenuItem("PICTURE",self.set_picture),Separator(),
+            MenuItem("Column width",self.set_column_width),MenuItem("Row height",self.set_row_height),Separator(),
             MenuItem("Align left",lambda:self.align("left")),MenuItem("Align center",lambda:self.align("center")),MenuItem("Align right",lambda:self.align("right")),
         ]);
         view_menu=Menu("View",[
@@ -377,6 +417,31 @@ class SESController:
     def align(self,value):
         try: self.book.style(self.selected(),"align",value); return self.note("Alignment changed");
         except SheetError as exc: return self.note(str(exc));
+    def set_column_width(self):
+        result=self._external(lambda:read_entry(text="Width in characters",default=str(self.book.column_width(self.cx)),title="Column width",theme=self.theme_name));
+        if result.accepted and result.value:
+            try:
+                cols=set();
+                for a,_b,c,_d in self.rects(): cols.update(range(a,c+1));
+                self.book.set_column_width(cols,int(result.value)); self.note(f"Column width {int(result.value)}");
+            except (ValueError,SheetError) as exc: self.note(f"ERROR {exc}");
+        return True;
+    def set_row_height(self):
+        result=self._external(lambda:read_entry(text="Height in terminal rows",default=str(self.book.row_height(self.cy)),title="Row height",theme=self.theme_name));
+        if result.accepted and result.value:
+            try:
+                rows=set();
+                for _a,b,_c,d in self.rects(): rows.update(range(b,d+1));
+                self.book.set_row_height(rows,int(result.value)); self.note(f"Row height {int(result.value)}");
+            except (ValueError,SheetError) as exc: self.note(f"ERROR {exc}");
+        return True;
+    def set_picture(self):
+        current=self.book.get(self.addr()).picture;
+        result=self._external(lambda:read_entry(text="PICTURE (0 required digit, # optional digit)",default=current,title="Cell PICTURE",theme=self.theme_name));
+        if result.accepted:
+            try: self.book.set_picture(self.selected(),result.value); self.note("PICTURE updated");
+            except SheetError as exc: self.note(f"ERROR {exc}");
+        return True;
     def set_border(self,name):
         self.border="single" if name=="none" else name; self.show_gridlines=(name!="none"); self.persist(); return self.note(f"Grid style: {self.border}");
     def toggle_gridlines(self): self.show_gridlines=not self.show_gridlines; self.persist(); return self.note("Grid lines "+("on" if self.show_gridlines else "off"));
