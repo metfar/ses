@@ -16,7 +16,7 @@ def test_border_styles_have_complete_glyph_sets():
 def test_preview_contains_evaluated_values():
     b=Book(); b.put("A1","2"); b.put("B1","=A1*3");
     text=workbook_html(b);
-    assert ">6.0<" in text;
+    assert ">6<" in text;
     assert "<table>" in text;
 
 
@@ -36,7 +36,7 @@ def test_about_uses_current_version():
     controller._external=lambda cb: cb();
     with patch("ses.tui.show_message") as dialog:
         controller.about();
-    assert "0.1.0a8" in dialog.call_args.args[0];
+    assert "0.1.0a9" in dialog.call_args.args[0];
 
 
 def test_preview_editing_aids_default_off_but_explicit_borders_remain():
@@ -45,8 +45,8 @@ def test_preview_editing_aids_default_off_but_explicit_borders_remain():
     text=workbook_html(b);
     assert "<thead>" not in text;
     assert "<th>1</th>" not in text;
-    assert "border:1px solid #bbb" not in text;
-    assert "border-top:1px solid #555" in text;
+    assert "border:0.2mm solid #bbb" not in text;
+    assert "border-top:0.35mm solid #555" in text;
 
 
 def test_preview_headers_and_gridlines_are_independent_options():
@@ -55,7 +55,7 @@ def test_preview_headers_and_gridlines_are_independent_options():
     assert "<thead>" in text;
     assert "<th>A</th>" in text;
     assert "<th>1</th>" in text;
-    assert "border:1px solid #bbb" in text;
+    assert "border:0.2mm solid #bbb" in text;
 
 
 def test_cell_border_is_undoable_and_persistent(tmp_path):
@@ -89,3 +89,24 @@ def test_picture_does_not_change_value():
     from ses.engine import Book
     b=Book(); b.put('A1','5'); b.set_picture(['A1'],'000.00')
     assert b.evaluate('A1')==5.0
+
+
+def test_preview_plain_numbers_match_tui_without_forced_decimals():
+    b=Book(); b.put("A1","120"); b.put("A2","8");
+    text=workbook_html(b);
+    assert ">120<" in text and ">8<" in text;
+    assert ">120.0<" not in text and ">8.0<" not in text;
+
+def test_preview_keeps_explicit_cell_colors_only():
+    b=Book(); b.put("A1","1"); b.put("B1","2");
+    b.style(["A1"],"fg",1); b.style(["A1"],"bg",6);
+    text=workbook_html(b);
+    assert "color:#aa0000" in text;
+    assert "background-color:#00aaaa" in text;
+    # Default B1 colors are not forced onto the printable page.
+    assert text.count("background-color:")==1;
+
+def test_explicit_color_flags_survive_roundtrip(tmp_path):
+    b=Book(); b.put("A1","1"); b.style(["A1"],"fg",0); b.style(["A1"],"bg",7);
+    p=tmp_path/"colors.ses"; b.save(p); c=Book.load(p);
+    assert c.get("A1").fg_explicit is True and c.get("A1").bg_explicit is True;

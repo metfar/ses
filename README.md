@@ -1,4 +1,4 @@
-# SES 0.1.0a8 — sumEditSpreadsheet
+# SES 0.1.0a9 — sumEditSpreadsheet
 
 SES is the keyboard-first spreadsheet/table editor for the sum ecosystem. This revision moves the whole interactive shell to **sumTUI** instead of maintaining a parallel curses UI, so menus, mouse routing, dialogs, themes, status bars and focus behavior come from the same transversal layer used by the other sum applications.
 
@@ -89,12 +89,13 @@ The current engine includes arithmetic, ranges, cross-sheet references, circular
 SES remains alpha software. Keep backups of real business workbooks while the file format and editing semantics are still evolving.
 
 
-## SES 0.1.0a8
+## SES 0.1.0a9
 
-- Persistent column widths (in terminal characters) and row heights (in terminal rows).
-- Empty cells preserve their configured dimensions in the TUI and print preview.
-- Cell `PICTURE` display format, independent from the stored value; for example `$ 0000.00` renders `5` as `$ 0005.00`.
-- Mouse drag selects a rectangular range.
-- Width, height and PICTURE changes participate in undo/redo and are stored in `.ses` files.
+- PDF/PNG preview uses the same value-to-text conversion as the TUI: plain numeric values do not gain `.0` unless a `PICTURE` requests decimals.
+- Printable columns are proportionally fitted to A4 landscape width so wide sheets are not clipped; additional rows paginate naturally.
+- Explicit SES foreground/background cell colors survive in PDF and PNG previews.
+- File → Preview PDF and File → Preview PNG share the same print renderer.
+- Save As appends `.ses` automatically when the user supplies no extension.
+- Explicit color state is persisted separately from default TUI colors, so printable pages stay white unless a cell was actually colored.
 
 <p align=center><b>- oOo -</b></p>

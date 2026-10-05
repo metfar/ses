@@ -232,6 +232,18 @@ def function(name, args):
     raise SheetError('#NAME?',f'Unknown function: {name}')
 
 
+def display_value(value, picture=''):
+    """Return the canonical display text for a cell value.
+
+    The TUI and every preview/export path must use this same conversion so
+    plain numeric cells do not acquire formatting that was never requested.
+    """
+    shown=format_picture(value,picture);
+    if shown is None: return '';
+    if isinstance(shown,float): return format(shown,'.11g');
+    return str(shown);
+
+
 def format_picture(value, picture):
     """Format a display value without changing its stored value.
 
@@ -283,6 +295,8 @@ class Cell:
     border_bottom: str='none'
     border_left: str='none'
     picture: str=''
+    fg_explicit: bool=False
+    bg_explicit: bool=False
 
 @dataclass
 class Sheet:
@@ -326,7 +340,7 @@ class Book:
             old=self.get(key,sh)
             prefix=raw[0] if raw and raw[0] in ('\'','^','"','\\') else None
             align={'\'':'left','^':'center','"':'right','\\':'repeat'}.get(prefix,'general')
-            self.sheets[sh].cells[key]=Cell(raw,old.bold,align,old.underline,old.fg,old.bg,old.border_top,old.border_right,old.border_bottom,old.border_left,old.picture)
+            self.sheets[sh].cells[key]=Cell(raw,old.bold,align,old.underline,old.fg,old.bg,old.border_top,old.border_right,old.border_bottom,old.border_left,old.picture,old.fg_explicit,old.bg_explicit)
         self.change(apply)
     def toggle_bold(self,addresses):
         def apply():
@@ -350,6 +364,8 @@ class Book:
                 cell=copy.deepcopy(self.get(addr))
                 current=getattr(cell,attribute)
                 setattr(cell,attribute,not current if value is None else value)
+                if attribute=='fg': cell.fg_explicit=True
+                if attribute=='bg': cell.bg_explicit=True
                 self.sheets[self.active].cells[addr]=cell
         self.change(apply)
 
@@ -575,5 +591,11 @@ class Book:
                 cells=data.get('cells',{}); widths=data.get('column_widths',{}); heights=data.get('row_heights',{});
             else:
                 cells=data; widths={}; heights={};
-            b.sheets[name]=Sheet({k:Cell(**v) for k,v in cells.items()},dict(widths),dict(heights))
+            loaded={}
+            for k,v in cells.items():
+                values=dict(v);
+                if 'fg_explicit' not in values: values['fg_explicit']=values.get('fg',7)!=7
+                if 'bg_explicit' not in values: values['bg_explicit']=values.get('bg',0)!=0
+                loaded[k]=Cell(**values)
+            b.sheets[name]=Sheet(loaded,dict(widths),dict(heights))
         b.active=obj['active']; return b

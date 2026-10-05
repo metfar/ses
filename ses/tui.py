@@ -39,8 +39,8 @@ from sumtui import (
 );
 
 from .borders import border_names, glyphs;
-from .engine import Book, Cell, SheetError, cellref, colname, transform_formula, format_picture;
-from .preview import make_pdf, open_file;
+from .engine import Book, Cell, SheetError, cellref, colname, transform_formula, display_value;
+from .preview import make_pdf, make_png, open_file;
 from .version import __version__;
 
 
@@ -53,9 +53,14 @@ HELP = [
     "Click row/column header selects it; Shift extends; Ctrl adds disjoint selection",
     "View controls editing grid lines and row/column headings independently",
     "Style > Cell borders marks real document/table borders for preview/print",
-    "File > Print preview builds the real PDF and opens it with the platform viewer",
+    "File > Preview PDF/PNG builds the real output and opens it with the platform viewer",
 ];
 
+
+
+def ensure_ses_extension(path):
+    target=Path(path).expanduser();
+    return target if target.suffix else target.with_suffix(".ses");
 
 def preference_path():
     base=Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home()/".config")));
@@ -151,8 +156,7 @@ class SpreadsheetGrid(Widget):
         return style;
     def _formatted(self,address,width,line_index=0):
         cell=self.host.book.get(address); value=self.host.book.evaluate(address);
-        shown=format_picture(value,cell.picture);
-        text="" if shown is None else (format(shown,".11g") if isinstance(shown,float) else str(shown));
+        text=display_value(value,cell.picture);
         # Row height reserves real blank screen rows. For now content is on the first row.
         if line_index>0: text="";
         text=text[:width];
@@ -326,7 +330,7 @@ class SESController:
             MenuItem("Row headers",lambda:self.toggle_preview("row_headers"),checked=lambda:self.preview_row_headers),
         ]);
         return MenuBar([
-            Menu("File",[MenuItem("New",self.new),MenuItem("Open",self.open_dialog),MenuItem("Save",self.save,"Ctrl+S"),MenuItem("Save as",self.save_as),Separator(),MenuItem("Print preview",self.preview),MenuItem("Preview options",submenu=preview_options),Separator(),MenuItem("Add sheet",self.add_sheet),MenuItem("Quit",self.quit)]),
+            Menu("File",[MenuItem("New",self.new),MenuItem("Open",self.open_dialog),MenuItem("Save",self.save,"Ctrl+S"),MenuItem("Save as",self.save_as),Separator(),MenuItem("Preview PDF",self.preview_pdf),MenuItem("Preview PNG",self.preview_png),MenuItem("Preview options",submenu=preview_options),Separator(),MenuItem("Add sheet",self.add_sheet),MenuItem("Quit",self.quit)]),
             Menu("Edit",[MenuItem("Undo",self.undo,"Ctrl+Z"),MenuItem("Redo",self.redo,"Ctrl+Y"),Separator(),MenuItem("Copy",self.copy,"Ctrl+C"),MenuItem("Cut",self.cut,"Ctrl+X"),MenuItem("Paste",self.paste,"Ctrl+V"),Separator(),MenuItem("Fill down",lambda:self.fill("down")),MenuItem("Fill right",lambda:self.fill("right")),Separator(),MenuItem("Insert row",self.insert_row),MenuItem("Insert column",self.insert_col)]),
             style_menu,view_menu,
             Menu("Data",[MenuItem("Recalculate",self.recalculate,"F9"),MenuItem("Go to cell",self.goto,"F5")]),
@@ -358,7 +362,7 @@ class SESController:
         default=self.file or str(Path(self.preferences.get("last_dir",str(Path.cwd())))/"workbook.ses");
         result=self._external(lambda:read_entry(text="File name or full path",default=default,title="Save SES as",theme=self.theme_name));
         if not result.accepted or not result.value: return True;
-        target=Path(result.value).expanduser();
+        target=ensure_ses_extension(result.value);
         if target.exists():
             answer=self._external(lambda:ask_question(f"Overwrite {target.name}?",theme=self.theme_name));
             if not answer.accepted: return True;
@@ -466,10 +470,15 @@ class SESController:
         if result.accepted:
             self.theme_name=str(result.value); self.app.set_theme(self.theme_name); self.persist(); self.note("Theme "+self.theme_name);
         return True;
-    def preview(self):
+    def _preview(self,kind):
         try:
-            path=make_pdf(self.book,gridlines=self.preview_gridlines,column_headers=self.preview_column_headers,row_headers=self.preview_row_headers); self._external(lambda:open_file(path)); return self.note(f"Preview: {path}");
-        except Exception as exc: return self.note(f"Preview error: {exc}");
+            maker=make_pdf if kind=="PDF" else make_png;
+            path=maker(self.book,gridlines=self.preview_gridlines,column_headers=self.preview_column_headers,row_headers=self.preview_row_headers);
+            self._external(lambda:open_file(path)); return self.note(f"Preview {kind}: {path}");
+        except Exception as exc: return self.note(f"Preview {kind} error: {exc}");
+    def preview_pdf(self): return self._preview("PDF");
+    def preview_png(self): return self._preview("PNG");
+    def preview(self): return self.preview_pdf();
     def help(self): self._external(lambda:show_message("\n".join(HELP),title="SES keys",theme=self.theme_name)); return True;
     def about(self): self._external(lambda:show_message(f"SES {__version__} - alpha\nGNU GPL-3.0-or-later",title="About SES",theme=self.theme_name)); return True;
     def run(self):

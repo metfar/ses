@@ -2,14 +2,14 @@ import tempfile;
 from pathlib import Path;
 
 from ses.engine import Book;
-from ses.tui import argument_parser, load_preferences, save_preferences, sample_book;
+from ses.tui import argument_parser, ensure_ses_extension, load_preferences, save_preferences, sample_book;
 from ses.version import __version__;
 
 
 def test_version_is_single_source():
-    assert __version__ == "0.1.0a8";
+    assert __version__ == "0.1.0a9";
     text=(Path(__file__).resolve().parents[1]/"README.md").read_text(encoding="utf-8");
-    assert "SES 0.1.0a8" in text;
+    assert "SES 0.1.0a9" in text;
     assert text.rstrip().endswith('<p align=center><b>- oOo -</b></p>');
 
 
@@ -33,3 +33,8 @@ def test_preferences_roundtrip():
         path=Path(directory)/"sumtui"/"ses.json";
         save_preferences({"theme":"MC","border":"thick","last_dir":"/tmp"},path);
         assert load_preferences(path)=={"theme":"MC","border":"thick","last_dir":"/tmp"};
+
+
+def test_save_as_default_extension():
+    assert ensure_ses_extension("report").name=="report.ses";
+    assert ensure_ses_extension("report.data").name=="report.data";
