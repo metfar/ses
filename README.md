@@ -1,43 +1,80 @@
-# SES 0.1.0a1 — sumEditSpreadsheet
+# SES 0.1.0a2 — experimental terminal spreadsheet
 
-**First executable alpha**, written against the actual sumTUI 0.8.0a30 snapshot in `Sum.Full.20261004.21.39.tar.gz`. No existing sum package is patched, and no release is published.
+A first, **independent** implementation of SES, inspired by the keyboard-first text interface of Quattro Pro / Lotus 1-2-3. It does **not** alter sumcore or any existing sum packages. Python >= 3.10, stdlib-only runtime, curses (Linux).
 
-## Launch
-
-With current sumTUI + sumUI installed:
+## Run
 
 ```bash
-cd ses/ses
-python3 -m pip install -e .
-ses --theme DOS --demo
+cd SES-0.1.0
+python3 -m ses
 ```
 
-Or with the unpacked snapshot checked out, point `PYTHONPATH` at `sumui/sumui/src`, `sumtui/sumtui/src` and `ses/ses/src` and launch `python3 -m ses.cli --demo`.
+To install as command: `python3 -m pip install --user .` (or in a virtual environment); then `ses`.
 
-`ses filename.ses` opens a saved workbook. SES saves `.ses` **JSON workbook v1**, intentionally not ODS/XLSX. Never edit a real workbook without making a backup: this is an alpha format.
+## Keys
 
-## Supported
+| Key | Action |
+|---|---|
+| Arrow keys | Navigate |
+| Shift+arrows | Extend range (when terminal emits distinct shifted keys) |
+| F1 | Help |
+| F2, or click formula bar | Edit existing cell |
+| Printable key | Replace active cell and start typing |
+| Enter | Commit edit |
+| Tab while editing | Pick formula reference with sheet cursor; press Enter to insert |
+| Ctrl+B | Bold entire selection |
+| Ctrl+Z / Ctrl+Y | Undo / redo |
+| F5 | Go to cell |
+| F6 | Next sheet |
+| F9 | Recalculate |
+| F10 / Esc | Menus |
+| `:` | Command line |
 
-- Shared `sumTUI` `MenuDesktop` and hierarchical menus, shared theme with `--theme DOS`, keyboard navigation, mouse picking, formula bar.
-- F2 edits existing content; typing replaces it. Enter commits, Esc cancels. Shift+arrows selects rectangle; mouse click/drag selects. Ctrl+B applies bold across the selection.
-- F5 go-to; F6 cycles sheets; File → New sheet. Ctrl+Z/Y undo/redo whole transactions, including copied blocks and formatting.
-- Ctrl+C/V copies the selected rectangle, shifting relative cell references, retaining `$` absolute/mixed addresses.
-- While editing a formula, Ctrl+arrows pick cells, Ctrl+Shift+arrows extend selection, F4 inserts selected reference (first prototype of the intended direct range picker).
-- `SUM AVG MIN MAX COUNT COUNTIF COUNTIFS SUMIF SUMIFS SUMPRODUCT IF AND OR NOT CHOOSE INDEX VLOOKUP HLOOKUP DATE TODAY ABS ROUND ROUNDUP ROUNDDOWN CEIL FLOOR MOD LEFT RIGHT MID FIND LENGTH/LEN UPPER LOWER TRIM REPLACE CONCAT/CONCATENATE STRING/STR VALUE`.
-- Formulas beginning `=`, `+`, `@` (the latter as direct function syntax), same-sheet ranges `A1:B4`, simple cross-sheet references `Sheet2!A1` or `Sheet2.A1`, nested formulas, comparisons, arithmetic, string concatenation with `&`.
-- Errors visible in cells (`#CYCLE!`, `#PARSE!`, `#REF!`, `#NAME?`, `#VALUE!`, `#DIV/0!`, etc.). Lazy, single-threaded, version-invalidation recalc: no formula execution with `eval()`.
-- Ctrl+S saves to current workbook (or prompts for name); Ctrl+O opens; atomic replacement on save.
+### Commands
 
-## Deliberately not yet supported
+`:save filename.ses`, `:open filename.ses`, `:sheet Pagos`, `:goto B20`, `:select A1:C12`, `:bold`, `:align center`, `:copy A1 C1`, `:undo`, `:redo`, `:quit`.
 
-- Full Calc/Excel external-workbook syntax and `.ods`/`.xlsx` import/export. External files are **not executed, linked or loaded**.
-- Full range picker mouse while editing; clicks in that mode currently select the grid, F4 inserts. Selection referencing is provisional.
-- Conditional formatting, numeric pictures, full cell font settings, per-cell color, column resizing, merge/sort/filter, print and graph UI, mobile, sync, python-in-formula, historical macros, GUI backend testing.
-- Excel locale-aware numbers or formulas with `,` decimal separator. Semicolon/comma argument separators work for dot-decimal formulas.
-- Exact cross-application semantic aliases of ROUNDUP vs CEIL: these intentionally differ for negatives and digits; CEIL is mathematical +∞ and FLOOR -∞.
-- Circular references are rejected (`#CYCLE!`), not iteratively solved.
+### Entering data
 
-**Known limits:** Saved cell styles are bold and label alignment only. `F4` is reference insertion, not yet absolute-address cycling. Formula error propagation is intentionally strict; COUNTIF wildcard behavior is preliminary. Cell/literal coordinates are bounded and ranges limited to 100k cells; memory use is not tuned for large sheets. This alpha is for testing, not production accounting.
+- Plain text or numbers, or formulas beginning `=`, `+`, `@` (e.g. `=SUM(A1:A3)`, `@SUM(A1:A3)`).
+- `'Text` left-aligned; `^Text` centered; `"Text` right-aligned; `\-` repeat dash to column width.
+- Cell addresses support `$A1`, `A$1`, `$A$1`; copy adjusts relative parts.
+- Cross-sheet: `=Sheet2!A1`.
+- `=SUMIF(A1:A5;"Ana";B1:B5)` and `=COUNTIF(A1:A5;">10")`.
+- Errors such as `#PARSE!`, `#NAME?`, `#REF!`, `#CYCLE!`, `#DIV/0!` appear in cells.
+- `ROUND` uses half-even; `ROUNDUP` away from zero, `ROUNDDOWN` towards zero; `CEIL` and `FLOOR` use +/- infinity (not synonyms for negative numbers).
+
+## Important limitations
+
+This is an **alpha prototype**, not production-ready for financial/business records. Only the native JSON-based `.ses` workbook is supported; external workbooks, Excel/ODS, locale customization, remote sync, printing, charts, stylesheets, Python cells and full mobile support remain out of scope. Formula expressions and function coverage are intentionally limited. The formula editor uses Tab as a range-picking toggle; terminals differ in mouse and shifted-arrow support. Single workbook, single-process calculation, bounded recursive evaluation with circular reference detection and cached results; no parallel evaluation.
+
+Input is parsed without `eval()`. The `.ses` JSON document is not an encrypted or authenticated format. Keep backups of important documents.
+
+## SES 0.1.0a2 additions
+
+This development revision adds a visible text cursor in the formula bar while editing,
+underline (`Ctrl+U`), foreground/background colors 0–7, optional DOS box-drawing
+full grid, internal copy/cut/paste (`Ctrl+C`, `Ctrl+X`, `Ctrl+V`), fill down/right,
+and insert row/column. Mouse-click column and row headings select full columns
+and rows. Holding Shift while clicking extends a selection; Ctrl-click adds a
+separate selected area **when the terminal reports those modifiers**. Affected
+edits are recorded as single undo/redo operations. Cell formats survive save/load.
+
+The Style menu toggles grid display. With the grid on, separators use an extra
+terminal row between sheet rows; the grid never becomes part of cell content.
+
+Examples of command-mode alternatives: `:copy A1:B3 D7`, `:cut A1:B3 D7`,
+`:fill down B1:B20`, `:fill right A3:E3`, `:row 4`, `:col C`, `:fg 3`,
+`:bg 1`, `:underline`, `:grid`.
+
+**Alpha limitations:** Only internal clipboard; system clipboard and multi-area
+copy/paste are not yet supported. Full-column formatting is capped at 50,000
+cells per command. Row/column insertion adjusts local and unquoted `Sheet!A1`
+references in the currently loaded workbook, but does not yet handle quoted
+sheet names, external files, named ranges, or every possible formula grammar.
+Cut/paste moves the source formula without retargeting all dependent formulas.
+Use backups for actual business records. Shift/Ctrl mouse selection depends on
+terminal modifier reporting; it may not be reliable in all terminals.
 
 <p align=center><b>- oOo -</b></p>
 
