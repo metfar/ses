@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sumeditspreadsheet"
+version = "0.1.0a1"
+description = "SES - sumEditSpreadsheet, a keyboard-first spreadsheet for the sum ecosystem"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-2.0-or-later"
+authors = [{ name = "William Martinez Bas", email = "metfar@gmail.com" }]
+dependencies = ["sumtui>=0.8.0a30"]
+
+[project.scripts]
+ses = "ses.cli:main"
+sumeditspreadsheet = "ses.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["ses*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
