@@ -36,7 +36,7 @@ def test_about_uses_current_version():
     controller._external=lambda cb: cb();
     with patch("ses.tui.show_message") as dialog:
         controller.about();
-    assert "0.1.0a11" in dialog.call_args.args[0];
+    assert "0.1.0a12" in dialog.call_args.args[0];
 
 
 def test_preview_editing_aids_default_off_but_explicit_borders_remain():
@@ -45,7 +45,7 @@ def test_preview_editing_aids_default_off_but_explicit_borders_remain():
     text=workbook_html(b);
     assert "<thead>" not in text;
     assert "<th>1</th>" not in text;
-    assert "border:0.2mm solid #bbb" not in text;
+    assert "border:1px solid #bbb" not in text;
     assert "border-top:0.35mm solid #555" in text;
 
 
@@ -55,7 +55,7 @@ def test_preview_headers_and_gridlines_are_independent_options():
     assert "<thead>" in text;
     assert "<th>A</th>" in text;
     assert "<th>1</th>" in text;
-    assert "border:0.2mm solid #bbb" in text;
+    assert "border:1px solid #bbb" in text;
 
 
 def test_cell_border_is_undoable_and_persistent(tmp_path):

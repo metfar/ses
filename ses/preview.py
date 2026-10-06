@@ -66,24 +66,22 @@ def _font_size(book,cols):
 
 
 def workbook_html(book,title="SES preview",*,gridlines=False,column_headers=False,row_headers=False):
-    """Render the active sheet for printing.
-
-    Editing aids are off by default. Explicit cell borders and explicit cell
-    foreground/background colors are document formatting and are always emitted.
-    Plain numbers use the same canonical display conversion as the TUI.
-    """
-    cols,rows=used_extent(book); grid_border="0.2mm solid #bbb" if gridlines else "0";
-    widths=[book.column_width(col) for col in range(1,cols+1)]; total=max(1,sum(widths)); fontpt=_font_size(book,cols);
+    """Render the active sheet with document layout measured in logical pixels."""
+    cols,rows=used_extent(book); grid_border="1px solid #bbb" if gridlines else "0";
+    page=book.page_setup; scale=max(0.10,min(4.0,float(page.get("scale_percent",100))/100.0));
+    char_px=8.0*scale; line_px=16.0*scale; font_px=13.0*scale;
+    widths=[book.column_width(col)*char_px for col in range(1,cols+1)];
+    page_css=(f"@page{{size:{page['page_width_px']}px {page['page_height_px']}px;"
+              f"margin:{page['margin_top_px']}px {page['margin_right_px']}px {page['margin_bottom_px']}px {page['margin_left_px']}px}}")
     lines=["<!doctype html><meta charset='utf-8'>",f"<title>{html.escape(title)}</title>",
-           "<style>@page{size:A4 landscape;margin:10mm}html,body{margin:0;padding:0}"
-           f"body{{font-family:monospace;font-size:{fontpt:.2f}pt;color:{DOS_COLORS[7]};background:{DOS_COLORS[0]}}}"
-           "table{border-collapse:collapse;width:100%;table-layout:fixed;break-inside:auto}"
-           "tr{break-inside:avoid}td,th{padding:1px 3px;white-space:pre;overflow:hidden;vertical-align:top}"
+           "<style>"+page_css+"html,body{margin:0;padding:0}"
+           f"body{{font-family:monospace;font-size:{font_px:.2f}px;color:{DOS_COLORS[7]};background:{DOS_COLORS[0]}}}"
+           "table{border-collapse:collapse;table-layout:fixed;width:auto;break-inside:auto}"
+           "tr{break-inside:avoid}td,th{padding:1px 3px;white-space:pre-wrap;overflow:hidden}"
            f"td{{border:{grid_border}}}th{{border:{grid_border};background:#eee;color:#000}} .n{{text-align:right}}</style>",
            "<table><colgroup>"];
-    if row_headers: lines.append("<col style='width:4%'>");
-    usable=96.0 if row_headers else 100.0;
-    for width in widths: lines.append(f"<col style='width:{usable*width/total:.6f}%'>");
+    if row_headers: lines.append(f"<col style='width:{4*char_px:.2f}px'>");
+    for width in widths: lines.append(f"<col style='width:{width:.2f}px'>");
     lines.append("</colgroup>");
     if column_headers:
         lines.append("<thead><tr>");
@@ -91,20 +89,34 @@ def workbook_html(book,title="SES preview",*,gridlines=False,column_headers=Fals
         for col in range(1,cols+1): lines.append(f"<th>{colname(col)}</th>");
         lines.append("</tr></thead>");
     lines.append("<tbody>");
+    covered=set(); merges={};
+    for region in book.sheets[book.active].merges:
+        c1,r1,c2,r2=map(int,region); merges[(c1,r1)]=(c1,r1,c2,r2);
+        for rr in range(r1,r2+1):
+            for cc in range(c1,c2+1):
+                if (cc,rr)!=(c1,r1): covered.add((cc,rr));
     for row in range(1,rows+1):
-        lines.append(f"<tr style=\"height:{book.row_height(row)*1.35:.2f}em\">");
+        lines.append(f"<tr style=\"height:{book.row_height(row)*line_px:.2f}px\">");
         if row_headers: lines.append(f"<th>{row}</th>");
         for col in range(1,cols+1):
+            if (col,row) in covered: continue;
             addr=f"{colname(col)}{row}"; cell=book.get(addr); value=book.evaluate(addr); text=display_value(value,cell.picture);
-            cls=" class='n'" if isinstance(value,(int,float)) and not isinstance(value,bool) else "";
+            cls=" class='n'" if isinstance(value,(int,float)) and not isinstance(value,bool) and cell.align=="general" else "";
             style=_border_css(cell);
             if cell.bold: style.append("font-weight:bold");
             if cell.underline: style.append("text-decoration:underline");
-            if cell.align in ("left","center","right"): style.append("text-align:"+cell.align);
+            halign="center" if cell.align=="center_across" else cell.align;
+            if halign in ("left","center","right","justify"): style.append("text-align:"+halign);
+            valign={"top":"top","middle":"middle","bottom":"bottom","justify":"middle"}.get(cell.valign,"top"); style.append("vertical-align:"+valign);
             style.append("color:"+DOS_COLORS.get(int(cell.fg),DOS_COLORS[7]));
             style.append("background-color:"+DOS_COLORS.get(int(cell.bg),DOS_COLORS[0]));
+            span="";
+            if (col,row) in merges:
+                _c1,_r1,c2,r2=merges[(col,row)];
+                if c2>col: span+=f" colspan='{c2-col+1}'";
+                if r2>row: span+=f" rowspan='{r2-row+1}'";
             style_attr=(" style='"+";".join(style)+"'") if style else "";
-            lines.append(f"<td{cls}{style_attr}>{html.escape(text)}</td>");
+            lines.append(f"<td{cls}{span}{style_attr}>{html.escape(text)}</td>");
         lines.append("</tr>");
     lines.append("</tbody></table>");
     return "".join(lines);

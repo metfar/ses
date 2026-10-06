@@ -342,6 +342,7 @@ class Cell:
     raw: str=''
     bold: bool=False
     align: str='general'
+    valign: str='top'
     underline: bool=False
     fg: int=7
     bg: int=0
@@ -358,6 +359,7 @@ class Sheet:
     cells: dict=field(default_factory=dict)
     column_widths: dict=field(default_factory=dict)
     row_heights: dict=field(default_factory=dict)
+    merges: list=field(default_factory=list)
 
 
 class Book:
@@ -369,17 +371,22 @@ class Book:
         self.max_history=100
         self.values={}; self.dirty=True
         self.last_error_detail=''
-    def snapshot(self): return copy.deepcopy((self.sheets,self.active))
+        self.page_setup={
+            'page_width_px':1123,'page_height_px':794,
+            'margin_left_px':38,'margin_right_px':38,'margin_top_px':38,'margin_bottom_px':38,
+            'scale_percent':100,
+        }
+    def snapshot(self): return copy.deepcopy((self.sheets,self.active,self.page_setup))
     def change(self, callback):
         old=self.snapshot(); callback()
         if self.snapshot()!=old:
             self.history.append(old); self.history=self.history[-self.max_history:]; self.future.clear(); self.dirty=True
     def undo(self):
         if self.history:
-            self.future.append(self.snapshot()); self.sheets,self.active=self.history.pop(); self.dirty=True
+            self.future.append(self.snapshot()); self.sheets,self.active,self.page_setup=self.history.pop(); self.dirty=True
     def redo(self):
         if self.future:
-            self.history.append(self.snapshot()); self.sheets,self.active=self.future.pop(); self.dirty=True
+            self.history.append(self.snapshot()); self.sheets,self.active,self.page_setup=self.future.pop(); self.dirty=True
     def add_sheet(self,name):
         if not name or name in self.sheets: raise SheetError('#SHEET!')
         def apply(): self.sheets[name]=Sheet(); self.active=name
@@ -396,7 +403,7 @@ class Book:
             old=self.get(key,sh)
             prefix=raw[0] if raw and raw[0] in ('\'','^','"','\\') else None
             align={'\'':'left','^':'center','"':'right','\\':'repeat'}.get(prefix,'general')
-            self.sheets[sh].cells[key]=Cell(raw,old.bold,align,old.underline,old.fg,old.bg,old.border_top,old.border_right,old.border_bottom,old.border_left,old.picture,old.fg_explicit,old.bg_explicit)
+            self.sheets[sh].cells[key]=Cell(raw,old.bold,align,old.valign,old.underline,old.fg,old.bg,old.border_top,old.border_right,old.border_bottom,old.border_left,old.picture,old.fg_explicit,old.bg_explicit)
         self.change(apply)
     def toggle_bold(self,addresses):
         def apply():
@@ -412,7 +419,7 @@ class Book:
             self.sheets[self.active].cells[f'{colname(c)}{d}']=source
         self.change(apply)
     def style(self,addresses,attribute,value=None):
-        if attribute not in ('bold','underline','fg','bg','align','border_top','border_right','border_bottom','border_left','picture'):
+        if attribute not in ('bold','underline','fg','bg','align','valign','border_top','border_right','border_bottom','border_left','picture'):
             raise ValueError('Unknown style')
         addresses=list(addresses)
         def apply():
@@ -450,6 +457,77 @@ class Book:
         self.style(addresses,'picture',str(picture or ''));
 
 
+
+
+    def _rect_from_addresses(self, addresses):
+        coords=[cellref(addr)[:2] for addr in addresses];
+        if not coords: raise SheetError('#RANGE!','Empty selection');
+        minc=min(c for c,_ in coords); maxc=max(c for c,_ in coords); minr=min(r for _,r in coords); maxr=max(r for _,r in coords);
+        expected=(maxc-minc+1)*(maxr-minr+1);
+        if len(set(coords))!=expected: raise SheetError('#RANGE!','Merge requires one contiguous rectangular selection');
+        return minc,minr,maxc,maxr;
+
+    def merged_region_at(self, addr, sheet=None):
+        sh=self.sheets[sheet or self.active]; c,r,*_=cellref(addr);
+        for region in sh.merges:
+            c1,r1,c2,r2=map(int,region);
+            if c1<=c<=c2 and r1<=r<=r2: return (c1,r1,c2,r2);
+        return None;
+
+    def merge(self, addresses):
+        """Merge one contiguous rectangle. The upper-left cell is the anchor."""
+        addresses=list(addresses); c1,r1,c2,r2=self._rect_from_addresses(addresses);
+        if (c1,r1)==(c2,r2): return;
+        sh=self.sheets[self.active];
+        for region in sh.merges:
+            a,b,c,d=map(int,region);
+            overlap=not (c2<a or c>c1 or r2<b or d<r1);
+            if overlap: raise SheetError('#RANGE!','Selection overlaps an existing merged range');
+        def apply():
+            sh.merges.append([c1,r1,c2,r2]);
+            # Internal cells retain their data in alpha format, but only anchor renders.
+        self.change(apply);
+
+    def unmerge(self, addresses):
+        addresses=list(addresses); c1,r1,c2,r2=self._rect_from_addresses(addresses); sh=self.sheets[self.active];
+        def apply():
+            sh.merges=[region for region in sh.merges if (int(region[2])<c1 or c2<int(region[0]) or int(region[3])<r1 or r2<int(region[1]))];
+        self.change(apply);
+
+    def set_page_setup(self, **values):
+        allowed={'page_width_px','page_height_px','margin_left_px','margin_right_px','margin_top_px','margin_bottom_px','scale_percent'};
+        unknown=set(values)-allowed;
+        if unknown: raise ValueError('Unknown page setup key: '+','.join(sorted(unknown)));
+        updated=dict(self.page_setup);
+        for key,value in values.items(): updated[key]=int(value);
+        if updated['page_width_px']<64 or updated['page_height_px']<64: raise SheetError('#VALUE!','Page dimensions are too small');
+        if updated['scale_percent']<10 or updated['scale_percent']>400: raise SheetError('#VALUE!','Scale must be between 10 and 400 percent');
+        if updated['margin_left_px']+updated['margin_right_px']>=updated['page_width_px'] or updated['margin_top_px']+updated['margin_bottom_px']>=updated['page_height_px']:
+            raise SheetError('#VALUE!','Margins leave no printable page area');
+        old=dict(self.page_setup);
+        def apply(): self.page_setup=updated;
+        # Page setup is document state and participates in undo.
+        self.history.append(self.snapshot()); self.history=self.history[-self.max_history:]; self.future.clear(); self.page_setup=updated; self.dirty=True;
+
+    def printable_size_px(self):
+        p=self.page_setup;
+        return (p['page_width_px']-p['margin_left_px']-p['margin_right_px'],p['page_height_px']-p['margin_top_px']-p['margin_bottom_px']);
+
+    def page_break_columns(self, max_col=256):
+        printable,_=self.printable_size_px(); scale=float(self.page_setup.get('scale_percent',100))/100.0; used=0.0; breaks=set();
+        for col in range(1,int(max_col)+1):
+            width=self.column_width(col)*8.0*scale;
+            if used and used+width>printable: breaks.add(col-1); used=0.0;
+            used+=width;
+        return breaks;
+
+    def page_break_rows(self, max_row=8192):
+        _,printable=self.printable_size_px(); scale=float(self.page_setup.get('scale_percent',100))/100.0; used=0.0; breaks=set();
+        for row in range(1,int(max_row)+1):
+            height=self.row_height(row)*16.0*scale;
+            if used and used+height>printable: breaks.add(row-1); used=0.0;
+            used+=height;
+        return breaks;
 
     def border(self, addresses, style="single", outline=False):
         """Apply semantic cell borders to a rectangular selection in one undo unit."""
@@ -560,6 +638,17 @@ class Book:
                         sh.row_heights={str((int(k)+count) if int(k)>=index else int(k)):v for k,v in sh.row_heights.items()}
                     else:
                         sh.column_widths={str((int(k)+count) if int(k)>=index else int(k)):v for k,v in sh.column_widths.items()}
+                    adjusted=[];
+                    for region in sh.merges:
+                        c1,r1,c2,r2=map(int,region);
+                        if axis=='row':
+                            if index<=r1: r1+=count; r2+=count;
+                            elif r1<index<=r2: r2+=count;
+                        else:
+                            if index<=c1: c1+=count; c2+=count;
+                            elif c1<index<=c2: c2+=count;
+                        adjusted.append([c1,r1,c2,r2]);
+                    sh.merges=adjusted;
         self.change(apply)
 
     def set_formula_language(self, language):
@@ -649,8 +738,8 @@ class Book:
             return function(name,[self._node(a,path,sheet) for a in args])
         raise SheetError('#PARSE!')
     def save(self,path):
-        obj={'format':'ses-0.1','active':self.active,'formula_language':self.formula_language,'sheets':{
-            name:{'cells':{k:vars(v) for k,v in sh.cells.items()},'column_widths':sh.column_widths,'row_heights':sh.row_heights} for name,sh in self.sheets.items()}}
+        obj={'format':'ses-0.1','active':self.active,'formula_language':self.formula_language,'page_setup':self.page_setup,'sheets':{
+            name:{'cells':{k:vars(v) for k,v in sh.cells.items()},'column_widths':sh.column_widths,'row_heights':sh.row_heights,'merges':sh.merges} for name,sh in self.sheets.items()}}
         Path(path).write_text(json.dumps(obj,ensure_ascii=False,indent=2),encoding='utf-8')
     @classmethod
     def load(cls,path):
@@ -660,14 +749,15 @@ class Book:
         for name,data in obj['sheets'].items():
             # Backward compatible with a1-a7 files where the sheet value was directly the cells mapping.
             if 'cells' in data and isinstance(data.get('cells'),dict):
-                cells=data.get('cells',{}); widths=data.get('column_widths',{}); heights=data.get('row_heights',{});
+                cells=data.get('cells',{}); widths=data.get('column_widths',{}); heights=data.get('row_heights',{}); merges=data.get('merges',[]);
             else:
-                cells=data; widths={}; heights={};
+                cells=data; widths={}; heights={}; merges=[];
             loaded={}
             for k,v in cells.items():
                 values=dict(v);
+                if 'valign' not in values: values['valign']='top'
                 if 'fg_explicit' not in values: values['fg_explicit']=values.get('fg',7)!=7
                 if 'bg_explicit' not in values: values['bg_explicit']=values.get('bg',0)!=0
                 loaded[k]=Cell(**values)
-            b.sheets[name]=Sheet(loaded,dict(widths),dict(heights))
-        b.active=obj['active']; return b
+            b.sheets[name]=Sheet(loaded,dict(widths),dict(heights),[list(map(int,r)) for r in merges])
+        b.active=obj['active']; b.page_setup.update({k:int(v) for k,v in obj.get('page_setup',{}).items() if k in b.page_setup}); return b

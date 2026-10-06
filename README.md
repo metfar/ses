@@ -1,4 +1,4 @@
-# SES 0.1.0a11 — sumEditSpreadsheet
+# SES 0.1.0a12 — sumEditSpreadsheet
 
 SES is the keyboard-first spreadsheet/table editor for the sum ecosystem. This revision moves the whole interactive shell to **sumTUI** instead of maintaining a parallel curses UI, so menus, mouse routing, dialogs, themes, status bars and focus behavior come from the same transversal layer used by the other sum applications.
 
@@ -92,7 +92,7 @@ SES remains alpha software. Keep backups of real business workbooks while the fi
 ## SES 0.1.0a11
 
 - PDF/PNG preview uses the same value-to-text conversion as the TUI: plain numeric values do not gain `.0` unless a `PICTURE` requests decimals.
-- Printable columns are proportionally fitted to A4 landscape width so wide sheets are not clipped; additional rows paginate naturally.
+- Printable layout used the first shared PDF/PNG renderer; a12 replaces the fixed A4 fit with document page setup in logical pixels and explicit scale.
 - Explicit SES foreground/background cell colors survive in PDF and PNG previews.
 - File → Preview PDF and File → Preview PNG share the same print renderer.
 - Save As appends `.ses` automatically when the user supplies no extension.
@@ -110,5 +110,13 @@ A workbook stores an independent formula language. The first lexicons are Englis
 ```
 
 Use `ses --formula-language es FILE` for an explicit override. `Help -> Functions A-Z` is generated alphabetically from the common lexicon and every entry includes an example. About remains application metadata, outside the function-help corpus.
+
+## SES 0.1.0a12
+
+- Contiguous rectangular selections can be merged and unmerged. The upper-left cell is the anchor, merged ranges persist in `.ses`, survive row/column insertion, and PDF preview emits `rowspan`/`colspan` rather than drawing internal borders.
+- Cell formatting now separates horizontal alignment (`left`, `center`, `right`, `justify`, `center across selection`) from vertical alignment (`top`, `middle`, `bottom`, `justify`).
+- Page setup is stored in logical pixels: page size, four margins, and print scale percentage. The same values feed page-break calculations and PDF layout.
+- `View -> Page boundaries` can show page-break guides in the TUI. The guide is an editing aid and is not a document border.
+- SES relies on sumTUI menu mnemonics, so the conventional `Alt+F`, `Alt+E`, `Alt+S`, `Alt+V`, `Alt+D`, `Alt+T`, and `Alt+H` combinations open the corresponding top-level menus.
 
 <p align=center><b>- oOo -</b></p>
