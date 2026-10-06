@@ -353,6 +353,7 @@ class Cell:
     picture: str=''
     fg_explicit: bool=False
     bg_explicit: bool=False
+    code: str=''
 
 @dataclass
 class Sheet:
@@ -360,6 +361,7 @@ class Sheet:
     column_widths: dict=field(default_factory=dict)
     row_heights: dict=field(default_factory=dict)
     merges: list=field(default_factory=list)
+    code: str=''
 
 
 class Book:
@@ -371,22 +373,23 @@ class Book:
         self.max_history=100
         self.values={}; self.dirty=True
         self.last_error_detail=''
+        self.workbook_code=''
         self.page_setup={
             'page_width_px':1123,'page_height_px':794,
             'margin_left_px':38,'margin_right_px':38,'margin_top_px':38,'margin_bottom_px':38,
             'scale_percent':100,
         }
-    def snapshot(self): return copy.deepcopy((self.sheets,self.active,self.page_setup))
+    def snapshot(self): return copy.deepcopy((self.sheets,self.active,self.page_setup,self.workbook_code))
     def change(self, callback):
         old=self.snapshot(); callback()
         if self.snapshot()!=old:
             self.history.append(old); self.history=self.history[-self.max_history:]; self.future.clear(); self.dirty=True
     def undo(self):
         if self.history:
-            self.future.append(self.snapshot()); self.sheets,self.active,self.page_setup=self.history.pop(); self.dirty=True
+            self.future.append(self.snapshot()); self.sheets,self.active,self.page_setup,self.workbook_code=self.history.pop(); self.dirty=True
     def redo(self):
         if self.future:
-            self.history.append(self.snapshot()); self.sheets,self.active,self.page_setup=self.future.pop(); self.dirty=True
+            self.history.append(self.snapshot()); self.sheets,self.active,self.page_setup,self.workbook_code=self.future.pop(); self.dirty=True
     def add_sheet(self,name):
         if not name or name in self.sheets: raise SheetError('#SHEET!')
         def apply(): self.sheets[name]=Sheet(); self.active=name
@@ -403,7 +406,7 @@ class Book:
             old=self.get(key,sh)
             prefix=raw[0] if raw and raw[0] in ('\'','^','"','\\') else None
             align={'\'':'left','^':'center','"':'right','\\':'repeat'}.get(prefix,'general')
-            self.sheets[sh].cells[key]=Cell(raw,old.bold,align,old.valign,old.underline,old.fg,old.bg,old.border_top,old.border_right,old.border_bottom,old.border_left,old.picture,old.fg_explicit,old.bg_explicit)
+            self.sheets[sh].cells[key]=Cell(raw,old.bold,align,old.valign,old.underline,old.fg,old.bg,old.border_top,old.border_right,old.border_bottom,old.border_left,old.picture,old.fg_explicit,old.bg_explicit,old.code)
         self.change(apply)
     def toggle_bold(self,addresses):
         def apply():
@@ -738,8 +741,8 @@ class Book:
             return function(name,[self._node(a,path,sheet) for a in args])
         raise SheetError('#PARSE!')
     def save(self,path):
-        obj={'format':'ses-0.1','active':self.active,'formula_language':self.formula_language,'page_setup':self.page_setup,'sheets':{
-            name:{'cells':{k:vars(v) for k,v in sh.cells.items()},'column_widths':sh.column_widths,'row_heights':sh.row_heights,'merges':sh.merges} for name,sh in self.sheets.items()}}
+        obj={'format':'ses-0.1','active':self.active,'formula_language':self.formula_language,'page_setup':self.page_setup,'workbook_code':self.workbook_code,'sheets':{
+            name:{'cells':{k:vars(v) for k,v in sh.cells.items()},'column_widths':sh.column_widths,'row_heights':sh.row_heights,'merges':sh.merges,'code':sh.code} for name,sh in self.sheets.items()}}
         Path(path).write_text(json.dumps(obj,ensure_ascii=False,indent=2),encoding='utf-8')
     @classmethod
     def load(cls,path):
@@ -749,15 +752,16 @@ class Book:
         for name,data in obj['sheets'].items():
             # Backward compatible with a1-a7 files where the sheet value was directly the cells mapping.
             if 'cells' in data and isinstance(data.get('cells'),dict):
-                cells=data.get('cells',{}); widths=data.get('column_widths',{}); heights=data.get('row_heights',{}); merges=data.get('merges',[]);
+                cells=data.get('cells',{}); widths=data.get('column_widths',{}); heights=data.get('row_heights',{}); merges=data.get('merges',[]); sheet_code=str(data.get('code','') or '');
             else:
-                cells=data; widths={}; heights={}; merges=[];
+                cells=data; widths={}; heights={}; merges=[]; sheet_code='';
             loaded={}
             for k,v in cells.items():
                 values=dict(v);
                 if 'valign' not in values: values['valign']='top'
                 if 'fg_explicit' not in values: values['fg_explicit']=values.get('fg',7)!=7
                 if 'bg_explicit' not in values: values['bg_explicit']=values.get('bg',0)!=0
+                if 'code' not in values: values['code']=''
                 loaded[k]=Cell(**values)
-            b.sheets[name]=Sheet(loaded,dict(widths),dict(heights),[list(map(int,r)) for r in merges])
-        b.active=obj['active']; b.page_setup.update({k:int(v) for k,v in obj.get('page_setup',{}).items() if k in b.page_setup}); return b
+            b.sheets[name]=Sheet(loaded,dict(widths),dict(heights),[list(map(int,r)) for r in merges],sheet_code)
+        b.active=obj['active']; b.workbook_code=str(obj.get('workbook_code','') or ''); b.page_setup.update({k:int(v) for k,v in obj.get('page_setup',{}).items() if k in b.page_setup}); return b

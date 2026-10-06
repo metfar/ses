@@ -33,7 +33,7 @@ from rich.console import Group;
 from rich.text import Text;
 from sumtui import (
     Application, HBox, Key, KeyEvent, Label, Menu, MenuBar, MenuDesktop,
-    MenuItem, MouseEvent, Separator, StatusBar, TextInput, VBox, Widget,
+    MenuItem, MouseEvent, Separator, StatusBar, TextEditor, TextInput, VBox, Widget,
     ask_question, available_theme_names, choose_file, choose_list,
     read_entry, read_form, refresh_user_themes, show_message,
 );
@@ -49,12 +49,13 @@ HELP = [
     f"SES {__version__} - sumEditSpreadsheet",
     "F2/click formula: edit cell; typing replaces cell",
     "Ctrl+C/X/V copy/cut/paste   Ctrl+Z/Y undo/redo",
-    "Ctrl+B bold   Ctrl+U underline   F5 goto   F6 next sheet",
+    "Ctrl+B bold   Ctrl+U underline   F5 goto   F6 next sheet   F10 menu",
     "Shift+arrows extends selection; mouse drag selects a rectangular range",
     "Click row/column header selects it; Shift extends; Ctrl adds disjoint selection",
     "View controls editing grid lines and row/column headings independently",
     "Style > Cell borders marks real document/table borders for preview/print",
     "File > Preview PDF/PNG builds the real output and opens it with the platform viewer",
+    "Code edits workbook, sheet, or cell Python source with line numbers; execution remains separate",
 ];
 
 
@@ -73,7 +74,7 @@ def load_preferences(path=None):
     try:
         data=json.loads(target.read_text(encoding="utf-8"));
         if not isinstance(data,dict): return {};
-        return {k:data[k] for k in ("theme","border","last_dir","formula_language","show_gridlines","show_column_headers","show_row_headers","preview_gridlines","preview_column_headers","preview_row_headers") if k in data};
+        return {k:data[k] for k in ("theme","border","last_dir","formula_language","show_gridlines","show_column_headers","show_row_headers","preview_gridlines","preview_column_headers","preview_row_headers","show_page_boundaries","alt_menu_hold_ms") if k in data};
     except (FileNotFoundError,ValueError,OSError): return {};
 
 
@@ -113,7 +114,8 @@ class FormulaLabel(Widget):
     def __init__(self, host): super().__init__(); self.host=host;
     def preferred_width(self,height=None): return max(10,len(self.host.book.active)+10);
     def __rich_console__(self,console,options):
-        yield Text(f"{self.host.book.active}  {self.host.addr()}: ",style=self.theme.style("input_border"));
+        marker="·" if self.host.current_code_present() else "";
+        yield Text(f"{self.host.book.active}  {self.host.addr()}{marker}: ",style=self.theme.style("input_border"));
 
 
 class SpreadsheetGrid(Widget):
@@ -301,6 +303,7 @@ class SESController:
         self.preview_column_headers=bool(self.preferences.get("preview_column_headers",False));
         self.preview_row_headers=bool(self.preferences.get("preview_row_headers",False));
         self.show_page_boundaries=bool(self.preferences.get("show_page_boundaries",False));
+        self.alt_menu_hold_ms=self.preferences.get("alt_menu_hold_ms",1500);
         self.clipboard=None; self.message="READY"; self.theme_name=theme;
         self.app=Application("SES",theme=theme,capture_control_keys=True,mouse=True);
         self.formula=TextInput("",on_submit=self._formula_submit); self.formula_label=FormulaLabel(self); self.grid=SpreadsheetGrid(self); self.status=StatusBar();
@@ -361,43 +364,48 @@ class SESController:
     def _menu(self):
         colors=["Black","Red","Green","Yellow","Blue","Magenta","Cyan","White"];
         def color_menu(attr): return Menu(attr.title(),[MenuItem(name,lambda n=i,a=attr:self.set_color(a,n)) for i,name in enumerate(colors)]);
-        grid_style=Menu("Grid style",[MenuItem(name.title(),lambda n=name:self.set_border(n),radio=lambda n=name:self.border==n) for name in ("single","thick")]);
-        cell_borders=Menu("Cell borders",[
-            MenuItem("Clear",lambda:self.set_cell_border("none",False)),Separator(),
-            MenuItem("Outline single",lambda:self.set_cell_border("single",True)),
-            MenuItem("All single",lambda:self.set_cell_border("single",False)),
-            MenuItem("Outline thick",lambda:self.set_cell_border("thick",True)),
-            MenuItem("All thick",lambda:self.set_cell_border("thick",False)),
+        grid_style=Menu("Grid &style",[MenuItem(name.title(),lambda n=name:self.set_border(n),radio=lambda n=name:self.border==n) for name in ("single","thick")]);
+        cell_borders=Menu("Cell b&orders",[
+            MenuItem("&Clear",lambda:self.set_cell_border("none",False)),Separator(),
+            MenuItem("Outline &single",lambda:self.set_cell_border("single",True)),
+            MenuItem("&All single",lambda:self.set_cell_border("single",False)),
+            MenuItem("Outline &thick",lambda:self.set_cell_border("thick",True)),
+            MenuItem("All thic&k",lambda:self.set_cell_border("thick",False)),
         ]);
-        style_menu=Menu("Style",[
-            MenuItem("Bold",self.toggle_bold,"Ctrl+B"),MenuItem("Underline",self.toggle_underline,"Ctrl+U"),Separator(),
-            MenuItem("Foreground",submenu=color_menu("fg")),MenuItem("Background",submenu=color_menu("bg")),
-            MenuItem("Cell format...",self.cell_format,"Ctrl+1"),MenuItem("Cell borders",submenu=cell_borders),MenuItem("PICTURE",self.set_picture),Separator(),
-            MenuItem("Column width",self.set_column_width),MenuItem("Row height",self.set_row_height),Separator(),
-            MenuItem("Merge cells",self.merge_cells),MenuItem("Unmerge cells",self.unmerge_cells),Separator(),
-            MenuItem("Align left",lambda:self.align("left")),MenuItem("Align center",lambda:self.align("center")),MenuItem("Align right",lambda:self.align("right")),MenuItem("Align justify",lambda:self.align("justify")),MenuItem("Center across selection",lambda:self.align("center_across")),Separator(),
-            MenuItem("Vertical top",lambda:self.valign("top")),MenuItem("Vertical middle",lambda:self.valign("middle")),MenuItem("Vertical bottom",lambda:self.valign("bottom")),MenuItem("Vertical justify",lambda:self.valign("justify")),
+        style_menu=Menu("&Style",[
+            MenuItem("&Bold",self.toggle_bold,"Ctrl+B"),MenuItem("&Underline",self.toggle_underline,"Ctrl+U"),Separator(),
+            MenuItem("&Foreground",submenu=color_menu("fg")),MenuItem("B&ackground",submenu=color_menu("bg")),
+            MenuItem("&Cell format...",self.cell_format,"Ctrl+1"),MenuItem("Cell b&orders",submenu=cell_borders),MenuItem("&PICTURE",self.set_picture),Separator(),
+            MenuItem("Column &width",self.set_column_width),MenuItem("&Row height",self.set_row_height),Separator(),
+            MenuItem("&Merge cells",self.merge_cells),MenuItem("U&nmerge cells",self.unmerge_cells),Separator(),
+            MenuItem("Align &left",lambda:self.align("left")),MenuItem("Align c&enter",lambda:self.align("center")),MenuItem("Align r&ight",lambda:self.align("right")),MenuItem("Align &justify",lambda:self.align("justify")),MenuItem("Center across selec&tion",lambda:self.align("center_across")),Separator(),
+            MenuItem("&Vertical top",lambda:self.valign("top")),MenuItem("Vertical mi&ddle",lambda:self.valign("middle")),MenuItem("Vertical bottom",lambda:self.valign("bottom")),MenuItem("Vertical ju&stify",lambda:self.valign("justify")),
         ]);
-        view_menu=Menu("View",[
-            MenuItem("Grid lines",self.toggle_gridlines,checked=lambda:self.show_gridlines),
-            MenuItem("Column headers",self.toggle_column_headers,checked=lambda:self.show_column_headers),
-            MenuItem("Row headers",self.toggle_row_headers,checked=lambda:self.show_row_headers),
-            MenuItem("Page boundaries",self.toggle_page_boundaries,checked=lambda:self.show_page_boundaries),
-            MenuItem("Grid style",submenu=grid_style),
+        view_menu=Menu("&View",[
+            MenuItem("&Grid lines",self.toggle_gridlines,checked=lambda:self.show_gridlines),
+            MenuItem("&Column headers",self.toggle_column_headers,checked=lambda:self.show_column_headers),
+            MenuItem("&Row headers",self.toggle_row_headers,checked=lambda:self.show_row_headers),
+            MenuItem("&Page boundaries",self.toggle_page_boundaries,checked=lambda:self.show_page_boundaries),
+            MenuItem("Grid &style",submenu=grid_style),
         ]);
-        preview_options=Menu("Preview options",[
-            MenuItem("Grid lines",lambda:self.toggle_preview("gridlines"),checked=lambda:self.preview_gridlines),
-            MenuItem("Column headers",lambda:self.toggle_preview("column_headers"),checked=lambda:self.preview_column_headers),
-            MenuItem("Row headers",lambda:self.toggle_preview("row_headers"),checked=lambda:self.preview_row_headers),
+        preview_options=Menu("Preview opt&ions",[
+            MenuItem("&Grid lines",lambda:self.toggle_preview("gridlines"),checked=lambda:self.preview_gridlines),
+            MenuItem("&Column headers",lambda:self.toggle_preview("column_headers"),checked=lambda:self.preview_column_headers),
+            MenuItem("&Row headers",lambda:self.toggle_preview("row_headers"),checked=lambda:self.preview_row_headers),
+        ]);
+        code_menu=Menu("&Code",[
+            MenuItem("&Workbook code",lambda:self.edit_code("workbook")),
+            MenuItem("&Sheet code",lambda:self.edit_code("sheet")),
+            MenuItem("&Cell code",lambda:self.edit_code("cell")),
         ]);
         return MenuBar([
-            Menu("File",[MenuItem("New",self.new),MenuItem("Open",self.open_dialog),MenuItem("Save",self.save,"Ctrl+S"),MenuItem("Save as",self.save_as),Separator(),MenuItem("Page setup...",self.page_setup),MenuItem("Preview PDF",self.preview_pdf),MenuItem("Preview PNG",self.preview_png),MenuItem("Preview options",submenu=preview_options),Separator(),MenuItem("Add sheet",self.add_sheet),MenuItem("Quit",self.quit)]),
-            Menu("Edit",[MenuItem("Undo",self.undo,"Ctrl+Z"),MenuItem("Redo",self.redo,"Ctrl+Y"),Separator(),MenuItem("Copy",self.copy,"Ctrl+C"),MenuItem("Cut",self.cut,"Ctrl+X"),MenuItem("Paste",self.paste,"Ctrl+V"),Separator(),MenuItem("Fill down",lambda:self.fill("down")),MenuItem("Fill right",lambda:self.fill("right")),Separator(),MenuItem("Insert row",self.insert_row),MenuItem("Insert column",self.insert_col)]),
-            style_menu,view_menu,
-            Menu("Data",[MenuItem("Recalculate",self.recalculate,"F9"),MenuItem("Go to cell",self.goto,"F5")]),
-            Menu("Tools",[MenuItem("Theme",self.choose_theme),MenuItem("Formula language",submenu=Menu("Formula language",[MenuItem(lang.upper(),lambda l=lang:self.set_formula_language(l),radio=lambda l=lang:self.book.formula_language==l) for lang in SUPPORTED_LANGUAGES]))]),
-            Menu("Help",[MenuItem("Functions A-Z",self.function_help),MenuItem("Keys",self.help),Separator(),MenuItem("About",self.about)]),
-        ],on_close=lambda:self.app.focus.set(self.grid));
+            Menu("&File",[MenuItem("&New",self.new),MenuItem("&Open",self.open_dialog),MenuItem("&Save",self.save,"Ctrl+S"),MenuItem("Save &as",self.save_as),Separator(),MenuItem("Page set&up...",self.page_setup),MenuItem("Preview &PDF",self.preview_pdf),MenuItem("Preview PN&G",self.preview_png),MenuItem("Preview opt&ions",submenu=preview_options),Separator(),MenuItem("Add s&heet",self.add_sheet),MenuItem("&Quit",self.quit)]),
+            Menu("&Edit",[MenuItem("&Undo",self.undo,"Ctrl+Z"),MenuItem("&Redo",self.redo,"Ctrl+Y"),Separator(),MenuItem("&Copy",self.copy,"Ctrl+C"),MenuItem("Cu&t",self.cut,"Ctrl+X"),MenuItem("&Paste",self.paste,"Ctrl+V"),Separator(),MenuItem("Fill &down",lambda:self.fill("down")),MenuItem("Fill r&ight",lambda:self.fill("right")),Separator(),MenuItem("Insert ro&w",self.insert_row),MenuItem("Insert colum&n",self.insert_col)]),
+            style_menu,view_menu,code_menu,
+            Menu("&Data",[MenuItem("&Recalculate",self.recalculate,"F9"),MenuItem("&Go to cell",self.goto,"F5")]),
+            Menu("&Tools",[MenuItem("&Theme",self.choose_theme),MenuItem("&Formula language",submenu=Menu("&Formula language",[MenuItem(lang.upper(),lambda l=lang:self.set_formula_language(l),radio=lambda l=lang:self.book.formula_language==l) for lang in SUPPORTED_LANGUAGES])),MenuItem("Menu &Alt hold...",self.configure_alt_menu_hold)]),
+            Menu("&Help",[MenuItem("&Functions A-Z",self.function_help),MenuItem("&Keys",self.help),Separator(),MenuItem("&About",self.about)]),
+        ],on_close=lambda:self.app.focus.set(self.grid),activation_key="f10",alt_menu_hold_ms=self.alt_menu_hold_ms,shortcut_available=lambda spec: spec not in self.app.bindings);
     def _install_bindings(self):
         bindings={"f1":self.help,"f2":lambda:self.start_edit(False),"f5":self.goto,"f6":self.next_sheet,"f9":self.recalculate,"f10":self.open_menu,
                   "ctrl+1":self.cell_format,"ctrl+z":self.undo,"ctrl+y":self.redo,"ctrl+c":self.copy,"ctrl+x":self.cut,"ctrl+v":self.paste,"ctrl+b":self.toggle_bold,"ctrl+u":self.toggle_underline,"ctrl+s":self.save,"escape":self.cancel_edit};
@@ -405,8 +413,52 @@ class SESController:
     def open_menu(self): self.menu.open(); self.app.focus.set(self.menu); self.app.invalidate(); return True;
     def _external(self,callback): return self.app.run_external(callback);
     def persist(self):
-        try: save_preferences({"theme":self.theme_name,"border":self.border,"formula_language":self.book.formula_language,"show_gridlines":self.show_gridlines,"show_column_headers":self.show_column_headers,"show_row_headers":self.show_row_headers,"preview_gridlines":self.preview_gridlines,"preview_column_headers":self.preview_column_headers,"preview_row_headers":self.preview_row_headers,"show_page_boundaries":self.show_page_boundaries,"last_dir":str(Path(self.file).expanduser().resolve().parent) if self.file else self.preferences.get("last_dir",str(Path.cwd()))});
+        try: save_preferences({"theme":self.theme_name,"border":self.border,"formula_language":self.book.formula_language,"show_gridlines":self.show_gridlines,"show_column_headers":self.show_column_headers,"show_row_headers":self.show_row_headers,"preview_gridlines":self.preview_gridlines,"preview_column_headers":self.preview_column_headers,"preview_row_headers":self.preview_row_headers,"show_page_boundaries":self.show_page_boundaries,"alt_menu_hold_ms":self.alt_menu_hold_ms,"last_dir":str(Path(self.file).expanduser().resolve().parent) if self.file else self.preferences.get("last_dir",str(Path.cwd()))});
         except OSError as exc: self.note(f"Preferences not saved: {exc}");
+    def current_code_present(self):
+        try:
+            cell=bool(self.book.get(self.addr()).code.strip());
+            sheet=bool(self.book.sheets[self.book.active].code.strip());
+            workbook=bool(self.book.workbook_code.strip());
+            return cell or sheet or workbook;
+        except Exception:
+            return False;
+    def _code_text(self,scope):
+        if scope=="workbook": return self.book.workbook_code;
+        if scope=="sheet": return self.book.sheets[self.book.active].code;
+        if scope=="cell": return self.book.get(self.addr()).code;
+        raise ValueError("Unknown code scope");
+    def _set_code_text(self,scope,text):
+        value=str(text or "");
+        def apply():
+            if scope=="workbook": self.book.workbook_code=value;
+            elif scope=="sheet": self.book.sheets[self.book.active].code=value;
+            elif scope=="cell":
+                cell=copy.deepcopy(self.book.get(self.addr())); cell.code=value;
+                col,row,*_=cellref(self.addr()); self.book.sheets[self.book.active].cells[f"{colname(col)}{row}"]=cell;
+            else: raise ValueError("Unknown code scope");
+        self.book.change(apply);
+    def edit_code(self,scope):
+        titles={"workbook":"Workbook code","sheet":f"Sheet code: {self.book.active}","cell":f"Cell code: {self.book.active}!{self.addr()}"};
+        editor=TextEditor(self._code_text(scope),line_numbers=True,syntax_highlighting=True,syntax_language="python",command_shortcuts=True);
+        status=StatusBar(); status.set("Ctrl+S save   Esc cancel");
+        panel=VBox(Label(titles[scope]),editor,status,sizes=[1,None,1]);
+        def save_code():
+            self._set_code_text(scope,editor.text); self.app.pop_modal(); self.app.focus.set(self.grid); self.selection_changed(); self.note(f"{titles[scope]} saved"); return True;
+        def cancel_code():
+            self.app.pop_modal(); self.app.focus.set(self.grid); self.selection_changed(); self.note("Code edit cancelled"); return True;
+        self.app.push_modal(panel,{"ctrl+s":save_code,"escape":cancel_code}); self.app.focus.set(editor); self.app.invalidate(); return True;
+    def configure_alt_menu_hold(self):
+        current="off" if self.alt_menu_hold_ms is None else str(self.alt_menu_hold_ms);
+        result=self._external(lambda:read_entry(text="Alt-only menu hold in milliseconds (off disables)",default=current,title="Menu Alt hold",theme=self.theme_name));
+        if not result.accepted: return True;
+        value=str(result.value or "").strip().lower();
+        try:
+            hold=None if value in ("off","none","disabled") else max(0,int(value));
+        except ValueError:
+            return self.note("Alt menu hold must be milliseconds or 'off'");
+        self.alt_menu_hold_ms=hold; self.menu.set_alt_menu_hold_ms(hold); self.persist();
+        return self.note("Alt-only menu hold disabled" if hold is None else f"Alt-only menu hold: {hold} ms");
     def new(self): self.book=Book(self.preferences.get("formula_language","en")); self.file=None; self.selection_changed(); self.note("New workbook"); return True;
     def open_dialog(self):
         start=self.preferences.get("last_dir",str(Path.cwd())); result=self._external(lambda:choose_file(path=start,title="Open SES",theme=self.theme_name));

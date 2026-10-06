@@ -111,6 +111,14 @@ A workbook stores an independent formula language. The first lexicons are Englis
 
 Use `ses --formula-language es FILE` for an explicit override. `Help -> Functions A-Z` is generated alphabetically from the common lexicon and every entry includes an example. About remains application metadata, outside the function-help corpus.
 
+
+## Next release: Code and menu mnemonics
+
+- The menu bar now uses explicit SUM mnemonics (`&File`, `&Edit`, `&Style`, `&View`, `&Code`, `&Data`, `&Tools`, `&Help`). Conflicting items can select another letter, for example `S&ave as` uses `A` while `&Save` keeps `S`.
+- `F10` activates the menu immediately. Holding Alt alone and releasing it after the configured threshold also activates the menu when the terminal/backend reports modifier release events. The default is 1500 ms; `Tools -> Menu Alt hold...` can change or disable it. Existing application/user Alt shortcuts keep priority over direct menu access.
+- `Code` provides line-numbered editors for workbook, active-sheet and current-cell Python source. Source is persisted in `.ses` files and older workbooks remain readable. The formula bar shows `·` when the current context has stored code.
+- This release stores and edits code only. Python-cell execution, workbook macros and user-defined formula functions still require the execution/sandbox contract and are not silently enabled by the editor.
+
 ## SES 0.1.0a12
 
 - Contiguous rectangular selections can be merged and unmerged. The upper-left cell is the anchor, merged ranges persist in `.ses`, survive row/column insertion, and PDF preview emits `rowspan`/`colspan` rather than drawing internal borders.

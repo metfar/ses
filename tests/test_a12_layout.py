@@ -64,3 +64,28 @@ def test_alt_menu_mnemonics_are_enabled_by_sumtui():
     event=KeyEvent("f",text="f",alt=True);
     assert controller.menu.handle_event(event) is True;
     assert controller.menu.active is True and controller.menu.menu_index==0;
+
+
+def test_code_scopes_roundtrip_and_code_menu_exists(tmp_path):
+    b=Book();
+    b.workbook_code="def total():\n    return 1\n";
+    b.sheets[b.active].code="sheet_value = 2\n";
+    b.put("A1","'coded");
+    cell=b.get("A1"); cell.code="cell_value = 3\n"; b.sheets[b.active].cells["A1"]=cell;
+    path=tmp_path/"code.ses"; b.save(path); loaded=Book.load(path);
+    assert loaded.workbook_code.startswith("def total");
+    assert loaded.sheets[loaded.active].code == "sheet_value = 2\n";
+    assert loaded.get("A1").code == "cell_value = 3\n";
+    controller=SESController(book=loaded,theme="DOS",preferences={});
+    assert any(menu.display_title == "Code" for menu in controller.menu.menus);
+    assert controller.current_code_present() is True;
+
+
+def test_ses_menu_uses_f10_and_configurable_alt_hold():
+    controller=SESController(theme="DOS",preferences={"alt_menu_hold_ms":2250});
+    assert controller.menu.activation_key == "f10";
+    assert controller.menu.interaction.normalized_hold_ms() == 2250;
+    file_menu=controller.menu.menus[0];
+    assert file_menu.mnemonic == "f";
+    save_as=next(item for item in file_menu.items if item.display_label == "Save as");
+    assert save_as.mnemonic == "a";
